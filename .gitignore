@@ -1,0 +1,72 @@
+# Python / environment
+__pycache__/
+*.pyc
+*.pyo
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.env
+.venv/
+venv/
+env/
+ENV/
+.idea/
+.vscode/
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database / local
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# IDE
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# --- Real clinic data (do not commit) ---
+data/inputs/history/
+data/inputs/payments/
+data/inputs/reference/
+
+# --- Generated outputs and exports ---
+data/outputs/
+exports/
+
+# --- Derived SQL output files ---
+sql/*.csv
+sql/out_*.txt
+
+# --- Other Atieh outputs ---
+archive/debug-output/
+
+
+
+
+

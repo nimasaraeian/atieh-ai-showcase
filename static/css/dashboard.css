@@ -1,0 +1,206 @@
+/* کلینیک آتیه - طراحی قدیمی */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: Tahoma, Arial, sans-serif;
+    background: #eee;
+    color: #333;
+    min-height: 100vh;
+    direction: rtl;
+}
+
+.app { display: flex; flex-direction: column; min-height: 100vh; }
+
+.topbar {
+    display: flex;
+    align-items: center;
+    padding: 10px 20px;
+    background: #2c3e50;
+    color: #fff;
+}
+
+.topbar__brand { font-weight: bold; margin-left: 20px; }
+
+.topbar__nav { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.nav-item {
+    padding: 6px 14px;
+    color: #ecf0f1;
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.nav-item:hover { background: #34495e; }
+.nav-item.active { background: #3498db; }
+
+.main { flex: 1; padding: 20px; }
+
+.page-title { font-size: 1.3rem; margin-bottom: 4px; }
+.page-subtitle { font-size: 13px; color: #666; margin-bottom: 16px; }
+
+.content { min-height: 200px; }
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+}
+
+.stat-card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 14px;
+}
+
+.stat-card__value { font-size: 1.5rem; font-weight: bold; }
+.stat-card__label { font-size: 12px; color: #777; margin-top: 4px; }
+
+.stat-card--accent .stat-card__value { color: #2980b9; }
+.stat-card--danger .stat-card__value { color: #c0392b; }
+.stat-card--warning .stat-card__value { color: #d35400; }
+
+.quick-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+.quick-link {
+    display: inline-block;
+    padding: 8px 16px;
+    background: #fff;
+    border: 1px solid #bdc3c7;
+    color: #2980b9;
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.quick-link:hover { background: #ecf0f1; }
+
+.card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 16px;
+}
+
+.card-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+
+.panel {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.panel__header { padding: 12px 16px; border-bottom: 1px solid #ddd; }
+.panel__body { padding: 16px; }
+
+.table-wrap { overflow-x: auto; max-height: 55vh; overflow-y: auto; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+.table th {
+    padding: 10px 12px;
+    text-align: right;
+    font-weight: 600;
+    background: #f5f5f5;
+    border-bottom: 1px solid #ddd;
+}
+
+.table td { padding: 8px 12px; border-bottom: 1px solid #eee; }
+.table tr:hover td { background: #fafafa; }
+.th-sort { cursor: pointer; }
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.badge--accent { background: #d6eaf8; color: #2980b9; }
+.badge--danger { background: #fadbd8; color: #c0392b; }
+.badge--warning { background: #fdebd0; color: #d35400; }
+.badge--neutral { background: #ecf0f1; color: #7f8c8d; }
+
+.form-group { margin-bottom: 12px; }
+.form-group.autocomplete { position: relative; }
+.form-label { display: block; font-size: 13px; margin-bottom: 4px; }
+
+.input {
+    width: 100%;
+    max-width: 320px;
+    padding: 8px 10px;
+    border: 1px solid #bdc3c7;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.input:focus { outline: none; border-color: #3498db; }
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.btn--primary { background: #3498db; color: #fff; }
+.btn--primary:hover { background: #2980b9; }
+.btn--outline { background: #fff; border: 1px solid #bdc3c7; color: #333; }
+.btn--outline:hover { background: #ecf0f1; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.toolbar .input { max-width: 200px; }
+.toolbar.filters .input { max-width: 160px; }
+
+.loading, .empty, .error { padding: 24px; text-align: center; color: #777; }
+.error { color: #c0392b; }
+
+.toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    background: #2c3e50;
+    color: #fff;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: 9999;
+}
+
+.toast.show { opacity: 1; }
+
+.slots { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.slot-btn {
+    padding: 8px 14px;
+    background: #fff;
+    border: 1px solid #bdc3c7;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.slot-btn:hover, .slot-btn.selected { border-color: #3498db; background: #ebf5fb; }
+
+.patient-financial { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+
+.autocomplete-results {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    left: 0;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.autocomplete-item { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #eee; }
+.autocomplete-item:hover { background: #f5f5f5; }

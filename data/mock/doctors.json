@@ -1,0 +1,182 @@
+[
+  {
+    "id": "D001",
+    "name": "دکتر احمدی",
+    "specialty": "جراحی",
+    "years_of_experience": 20,
+    "rating": 4.7,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D002",
+    "name": "دکتر نعمتی",
+    "specialty": "جراحی",
+    "years_of_experience": 3,
+    "rating": 4.9,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D003",
+    "name": "دکتر صادقی",
+    "specialty": "ایمپلنت",
+    "years_of_experience": 5,
+    "rating": 4.6,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D004",
+    "name": "دکتر کریمی",
+    "specialty": "ارتودنسی",
+    "years_of_experience": 8,
+    "rating": 4.1,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D005",
+    "name": "دکتر محمدی",
+    "specialty": "عمومی",
+    "years_of_experience": 21,
+    "rating": 4.7,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D006",
+    "name": "دکتر رضایی",
+    "specialty": "عمومی",
+    "years_of_experience": 16,
+    "rating": 4.6,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D007",
+    "name": "دکتر علیزاده",
+    "specialty": "ایمپلنت",
+    "years_of_experience": 9,
+    "rating": 4.5,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D008",
+    "name": "دکتر حسینی",
+    "specialty": "زیبایی",
+    "years_of_experience": 9,
+    "rating": 4.1,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D009",
+    "name": "دکتر جعفری",
+    "specialty": "ایمپلنت",
+    "years_of_experience": 18,
+    "rating": 4.1,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D010",
+    "name": "دکتر مرادی",
+    "specialty": "ارتودنسی",
+    "years_of_experience": 6,
+    "rating": 4.4,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D011",
+    "name": "دکتر باقری",
+    "specialty": "اطفال",
+    "years_of_experience": 13,
+    "rating": 4.9,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D012",
+    "name": "دکتر یوسفی",
+    "specialty": "عمومی",
+    "years_of_experience": 12,
+    "rating": 4.2,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D013",
+    "name": "دکتر اسدی",
+    "specialty": "اطفال",
+    "years_of_experience": 12,
+    "rating": 5.0,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D014",
+    "name": "دکتر ملکی",
+    "specialty": "زیبایی",
+    "years_of_experience": 10,
+    "rating": 4.4,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D015",
+    "name": "دکتر قاسمی",
+    "specialty": "ایمپلنت",
+    "years_of_experience": 13,
+    "rating": 4.9,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D016",
+    "name": "دکتر شریفی",
+    "specialty": "عمومی",
+    "years_of_experience": 3,
+    "rating": 4.2,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D017",
+    "name": "دکتر موسوی",
+    "specialty": "عمومی",
+    "years_of_experience": 14,
+    "rating": 4.1,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D018",
+    "name": "دکتر حیدری",
+    "specialty": "عمومی",
+    "years_of_experience": 18,
+    "rating": 4.6,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D019",
+    "name": "دکتر نوری",
+    "specialty": "ایمپلنت",
+    "years_of_experience": 24,
+    "rating": 4.5,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  },
+  {
+    "id": "D020",
+    "name": "دکتر خانی",
+    "specialty": "جراحی",
+    "years_of_experience": 5,
+    "rating": 4.4,
+    "is_active": true,
+    "created_at": "2026-02-06T12:57:17.738048"
+  }
+]
