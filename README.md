@@ -1,5 +1,9 @@
 # Dental clinic AI
 
+AI-powered clinic intelligence system
+for value-based patient prioritization
+and scheduling optimization
+
 ## AI-Powered Clinic Intelligence and Value-Based Scheduling System
 
 Atieh AI is a real-world decision intelligence prototype designed to demonstrate how operational clinic data can be transformed into actionable insights through AI-driven analysis.
@@ -26,6 +30,16 @@ The system combines patient behavior signals, financial indicators, and operatio
 - [Author](#author)
 - [License](#license)
 
+---
+
+## Example scenario
+
+Input:
+patient history + payments
+
+Output:
+priority score
+recommended scheduling action
 ---
 
 ## Overview
