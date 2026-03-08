@@ -1,4 +1,4 @@
-# Atieh AI
+# Dental clinic AI
 
 ## AI-Powered Clinic Intelligence and Value-Based Scheduling System
 
