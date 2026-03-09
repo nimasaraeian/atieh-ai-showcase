@@ -1,34 +1,66 @@
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>کلینیک آتیه | داشبورد هوشمند</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css" />
 </head>
 <body>
-    <div class="app">
-        <header class="topbar">
-            <span class="topbar__brand">کلینیک آتیه</span>
-            <nav class="topbar__nav">
-                <a href="#/" class="nav-item active" data-route="/">داشبورد</a>
-                <a href="#/appointment" class="nav-item" data-route="/appointment">نوبت جدید</a>
-                <a href="#/followup" class="nav-item" data-route="/followup">صف پیگیری</a>
-                <a href="#/top300" class="nav-item" data-route="/top300">اولویت ۳۰۰</a>
-                <a href="#/priority" class="nav-item" data-route="/priority">اولویت AI</a>
-                <a href="#/patients" class="nav-item" data-route="/patients">جستجوی بیمار</a>
-            </nav>
-        </header>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand__logo">A</div>
+                <div>
+                    <div class="brand__title">Atieh AI</div>
+                    <div class="brand__subtitle">Clinic Decision System</div>
+                </div>
+            </div>
 
-        <main class="main">
-            <h1 id="page-title" class="page-title">داشبورد</h1>
-            <div id="page-subtitle" class="page-subtitle">خلاصه وضعیت عملیاتی کلینیک</div>
-            <div id="page-content" class="content"><div class="loading">در حال بارگذاری...</div></div>
-        </main>
+            <nav class="sidebar__nav">
+                <a href="#/" class="nav-link active" data-route="/">داشبورد مدیریتی</a>
+                <a href="#/followup" class="nav-link" data-route="/followup">صف پیگیری</a>
+                <a href="#/top300" class="nav-link" data-route="/top300">اولویت ۳۰۰</a>
+                <a href="#/priority" class="nav-link" data-route="/priority">اولویت AI</a>
+                <a href="#/patients" class="nav-link" data-route="/patients">جستجوی بیمار</a>
+                <a href="#/appointment" class="nav-link" data-route="/appointment">نوبت جدید</a>
+            </nav>
+        </aside>
+
+        <div class="main-shell">
+            <header class="topbar">
+                <div>
+                    <h1 id="page-title" class="page-title">داشبورد مدیریتی</h1>
+                    <p id="page-subtitle" class="page-subtitle">نمای کلی وضعیت مالی، عملیاتی و تصمیم‌سازی کلینیک</p>
+                </div>
+                <div class="topbar__actions">
+                    <button id="refreshBtn" class="btn btn--primary">بروزرسانی</button>
+                </div>
+            </header>
+
+            <main id="page-content" class="page-content">
+                <div class="loading-state">در حال بارگذاری...</div>
+            </main>
+        </div>
     </div>
 
     <div id="toast" class="toast"></div>
+
+    <div id="patientModal" class="modal hidden">
+        <div class="modal__backdrop" data-close="true"></div>
+        <div class="modal__panel">
+            <div class="modal__header">
+                <div>
+                    <h3 class="modal__title">جزئیات بیمار</h3>
+                    <div id="modalRecordNo" class="modal__subtitle"></div>
+                </div>
+                <button id="closeModalBtn" class="modal__close">×</button>
+            </div>
+            <div id="patientModalBody" class="modal__body"></div>
+        </div>
+    </div>
+
     <script src="/static/js/api.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
-</html>
+</html

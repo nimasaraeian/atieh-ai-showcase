@@ -40,23 +40,54 @@ def recommend_slot(req: EngineRecommendRequest):
 # ── Catalog endpoints for frontend dropdowns ─────────────────────────────────────
 
 
+def _resolve_catalog_path(candidates):
+    """Return first existing path from candidates, or None."""
+    from pathlib import Path
+    for p in candidates:
+        path = Path(p)
+        if path.exists():
+            return str(path)
+    return None
+
+
 @router.get("/catalog/services")
 def get_services():
     """
     Return list of unique service names from reference catalog.
+    Returns [] if no catalog file found.
     """
     import pandas as pd
 
-    df = pd.read_csv("data/reference/services_catalog.csv")
-    return df["service_name"].dropna().unique().tolist()
+    path = _resolve_catalog_path([
+        "data/reference/services_catalog.csv",
+        "data/outputs/services_catalog.csv",
+        "data/inputs/reference/services_catalog.csv",
+    ])
+    if not path:
+        logger.warning("services catalog not found; returning empty list")
+        return []
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    col = "service_name" if "service_name" in df.columns else df.columns[0]
+    return df[col].dropna().astype(str).unique().tolist()
 
 
 @router.get("/catalog/insurances")
 def get_insurances():
     """
     Return list of unique insurance names from reference catalog.
+    Returns [] if no catalog file found.
     """
     import pandas as pd
 
-    df = pd.read_csv("data/reference/insurance_payment_priority.csv")
-    return df["insurance_name"].dropna().unique().tolist()
+    path = _resolve_catalog_path([
+        "data/reference/insurance_payment_priority.csv",
+        "data/outputs/insurance_priority.csv",
+        "data/inputs/payments/insurance_payment_priority.csv",
+        "data/reference/insurance_priority.csv",
+    ])
+    if not path:
+        logger.warning("insurance catalog not found; returning empty list")
+        return []
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    col = next((c for c in ["insurance_name", "insurer_name_norm", "payer_source_norm"] if c in df.columns), df.columns[0])
+    return df[col].dropna().astype(str).unique().tolist()

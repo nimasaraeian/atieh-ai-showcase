@@ -688,53 +688,6 @@ def get_financial_patient_detail(record_no: str):
         conn.close()
 
 
-
-@router.get("/dashboard/trends")
-def get_dashboard_trends(
-    limit: int = Query(24, ge=1, le=120),
-):
-    """
-    Return monthly trend summary based on last_payment_date_raw.
-    """
-    conn = get_financial_db()
-    try:
-        cur = conn.cursor()
-
-        try:
-            cur.execute(
-                """
-                SELECT
-                    SUBSTR(last_payment_date_raw, 1, 7) AS period,
-                    COUNT(*) AS identity_count,
-                    COALESCE(SUM(lifetime_net_received), 0) AS total_revenue,
-                    COALESCE(AVG(financial_value_score), 0) AS avg_financial_value_score
-                FROM financial_identity_profile
-                WHERE last_payment_date_raw IS NOT NULL
-                  AND LENGTH(last_payment_date_raw) >= 7
-                GROUP BY SUBSTR(last_payment_date_raw, 1, 7)
-                ORDER BY period DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-            rows = cur.fetchall()
-        except sqlite3.OperationalError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Trend query unavailable: {e}",
-            )
-
-        data = [dict(r) for r in rows]
-
-        return {
-            "count": len(data),
-            "limit": limit,
-            "data": data,
-        }
-    finally:
-        conn.close()
-
-
 @router.get("/scheduling/priority")
 def get_scheduling_priority(
     limit: int = Query(500, ge=1, le=5000),
@@ -794,224 +747,65 @@ def get_scheduling_priority(
 # ── Patient financial lookup (for new appointment) ───────────────────────────
 @router.get("/patient-lookup")
 def get_patient_financial_lookup(
-    q: Optional[str] = Query(None, description="Generic search: record_no, mobile, patient name"),
     mobile: Optional[str] = Query(None),
     record_no: Optional[str] = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
 ):
     """
-    Flexible patient lookup for frontend search and appointment workflow.
-
-    Supports:
-    - q: generic search over record_no / mobile / patient_name
-    - mobile: direct mobile lookup
-    - record_no: direct record lookup
+    Lookup financial tier, action_type, scheduling_priority_score for a patient
+    by mobile or record_no. Searches top300 and daily balanced.
     """
-    if not q and not mobile and not record_no:
-        return {"count": 0, "data": []}
-
+    if not mobile and not record_no:
+        return {"found": False, "data": None}
     conn = get_financial_db()
     try:
         cur = conn.cursor()
-
-        rows = []
-        seen = set()
-
-        def add_rows(fetched):
-            for r in fetched:
-                d = dict(r)
-                key = str(d.get("record_no") or "")
-                if key not in seen:
-                    seen.add(key)
-                    rows.append(d)
-
-        # 1) explicit record_no lookup
-        if record_no:
-            try:
-                cur.execute(
-                    """
-                    SELECT
-                        record_no,
-                        patient_name_canonical,
-                        mobile_canonical,
-                        financial_tier,
-                        action_type,
-                        scheduling_band,
-                        scheduling_priority_score,
-                        lifetime_net_received,
-                        last_payment_date_raw
-                    FROM v_financial_scheduling_queue_top300
-                    WHERE record_no = ?
-                    LIMIT ? OFFSET ?
-                    """,
-                    (str(record_no), limit, offset),
-                )
-                add_rows(cur.fetchall())
-            except sqlite3.OperationalError:
-                pass
-
-        # 2) explicit mobile lookup
+        row = None
         if mobile:
             mobile_clean = "".join(c for c in str(mobile) if c.isdigit())
-            if len(mobile_clean) >= 7:
-                try:
-                    cur.execute(
-                        """
-                        SELECT
-                            record_no,
-                            patient_name_canonical,
-                            mobile_canonical,
-                            financial_tier,
-                            action_type,
-                            scheduling_band,
-                            scheduling_priority_score,
-                            lifetime_net_received,
-                            last_payment_date_raw
-                        FROM v_financial_scheduling_queue_top300
-                        WHERE REPLACE(REPLACE(mobile_canonical,' ',''),'-','') LIKE ?
-                        LIMIT ? OFFSET ?
-                        """,
-                        (f"%{mobile_clean[-10:]}%", limit, offset),
-                    )
-                    add_rows(cur.fetchall())
-                except sqlite3.OperationalError:
-                    pass
-
-                if not rows:
-                    try:
-                        cur.execute(
-                            """
-                            SELECT
-                                record_no,
-                                patient_name_canonical,
-                                mobile_canonical,
-                                financial_tier,
-                                action_type,
-                                NULL as scheduling_band,
-                                action_priority_score as scheduling_priority_score,
-                                lifetime_net_received,
-                                last_payment_date_raw
-                            FROM v_financial_followup_daily_balanced
-                            WHERE REPLACE(REPLACE(mobile_canonical,' ',''),'-','') LIKE ?
-                            LIMIT ? OFFSET ?
-                            """,
-                            (f"%{mobile_clean[-10:]}%", limit, offset),
-                        )
-                        add_rows(cur.fetchall())
-                    except sqlite3.OperationalError:
-                        pass
-
-        # 3) generic q lookup
-        if q:
-            q_str = str(q).strip()
-            q_digits = "".join(c for c in q_str if c.isdigit())
-
-            # 3a) q as record_no
-            if q_digits:
-                try:
-                    cur.execute(
-                        """
-                        SELECT
-                            record_no,
-                            patient_name_canonical,
-                            mobile_canonical,
-                            financial_tier,
-                            action_type,
-                            scheduling_band,
-                            scheduling_priority_score,
-                            lifetime_net_received,
-                            last_payment_date_raw
-                        FROM v_financial_scheduling_queue_top300
-                        WHERE CAST(record_no AS TEXT) LIKE ?
-                        LIMIT ? OFFSET ?
-                        """,
-                        (f"%{q_digits}%", limit, offset),
-                    )
-                    add_rows(cur.fetchall())
-                except sqlite3.OperationalError:
-                    pass
-
-            # 3b) q as mobile fragment
-            if q_digits and len(q_digits) >= 7:
-                try:
-                    cur.execute(
-                        """
-                        SELECT
-                            record_no,
-                            patient_name_canonical,
-                            mobile_canonical,
-                            financial_tier,
-                            action_type,
-                            scheduling_band,
-                            scheduling_priority_score,
-                            lifetime_net_received,
-                            last_payment_date_raw
-                        FROM v_financial_scheduling_queue_top300
-                        WHERE REPLACE(REPLACE(mobile_canonical,' ',''),'-','') LIKE ?
-                        LIMIT ? OFFSET ?
-                        """,
-                        (f"%{q_digits[-10:]}%", limit, offset),
-                    )
-                    add_rows(cur.fetchall())
-                except sqlite3.OperationalError:
-                    pass
-
-            # 3c) q as patient name
-            try:
+            if len(mobile_clean) >= 10:
                 cur.execute(
                     """
-                    SELECT
-                        record_no,
-                        patient_name_canonical,
-                        mobile_canonical,
-                        financial_tier,
-                        action_type,
-                        scheduling_band,
-                        scheduling_priority_score,
-                        lifetime_net_received,
-                        last_payment_date_raw
+                    SELECT patient_name_canonical, mobile_canonical, financial_tier,
+                           action_type, scheduling_priority_score, scheduling_band,
+                           lifetime_net_received, record_no
                     FROM v_financial_scheduling_queue_top300
-                    WHERE patient_name_canonical LIKE ?
-                    LIMIT ? OFFSET ?
+                    WHERE REPLACE(REPLACE(mobile_canonical,' ',''),'-','') LIKE ?
+                    LIMIT 1
                     """,
-                    (f"%{q_str}%", limit, offset),
+                    (f"%{mobile_clean[-10:]}%",),
                 )
-                add_rows(cur.fetchall())
-            except sqlite3.OperationalError:
-                pass
-
-            if not rows:
-                try:
+                row = cur.fetchone()
+                if not row:
                     cur.execute(
                         """
-                        SELECT
-                            record_no,
-                            patient_name_canonical,
-                            mobile_canonical,
-                            financial_tier,
-                            action_type,
-                            NULL as scheduling_band,
-                            action_priority_score as scheduling_priority_score,
-                            lifetime_net_received,
-                            last_payment_date_raw
+                        SELECT patient_name_canonical, mobile_canonical, financial_tier,
+                               action_type, action_priority_score, NULL as scheduling_priority_score,
+                               lifetime_net_received, record_no
                         FROM v_financial_followup_daily_balanced
-                        WHERE patient_name_canonical LIKE ?
-                        LIMIT ? OFFSET ?
+                        WHERE REPLACE(REPLACE(mobile_canonical,' ',''),'-','') LIKE ?
+                        LIMIT 1
                         """,
-                        (f"%{q_str}%", limit, offset),
+                        (f"%{mobile_clean[-10:]}%",),
                     )
-                    add_rows(cur.fetchall())
-                except sqlite3.OperationalError:
-                    pass
-
-        return {
-            "count": len(rows),
-            "data": rows[0:limit],
-        }
+                    row = cur.fetchone()
+        elif record_no:
+            cur.execute(
+                """
+                SELECT patient_name_canonical, mobile_canonical, financial_tier,
+                       action_type, scheduling_priority_score, scheduling_band,
+                       lifetime_net_received, record_no
+                FROM v_financial_scheduling_queue_top300
+                WHERE record_no = ?
+                LIMIT 1
+                """,
+                (str(record_no),),
+            )
+            row = cur.fetchone()
+        if row:
+            return {"found": True, "data": dict(row)}
+        return {"found": False, "data": None}
     finally:
         conn.close()
-
 
 
 # ── Test / status route ──────────────────────────────────────────────────────

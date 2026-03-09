@@ -1,82 +1,79 @@
-/**
- * API layer for Atieh Clinic Dashboard
- * Centralized fetch wrapper and endpoint functions
- */
-(function (global) {
-    'use strict';
-
-    const origin = window.location.origin;
-    const BASE = (origin && origin.startsWith('http')) ? origin : 'http://127.0.0.1:8000';
-
-    async function request(path, opts = {}) {
-        const url = path.startsWith('http') ? path : BASE + path;
-        const res = await fetch(url, {
-            headers: { 'Accept': 'application/json', ...opts.headers },
-            ...opts
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const ct = res.headers.get('content-type');
-        if (ct && ct.includes('application/json')) return res.json();
-        return res.text();
+const API = (() => {
+    /**
+     * Extract a readable error message from API error payload.
+     * Handles: string detail, array of validation errors, nested objects.
+     */
+    function extractErrorMessage(payload) {
+        if (!payload) return "خطای نامشخص";
+        const d = payload.detail ?? payload.error ?? payload.message;
+        if (typeof d === "string") return d;
+        if (Array.isArray(d)) {
+            const msgs = d.map((x) => (x && x.msg) || JSON.stringify(x)).filter(Boolean);
+            return msgs.length ? msgs.join("; ") : "خطای اعتبارسنجی";
+        }
+        if (d && typeof d === "object") return (d.msg ?? d.message ?? JSON.stringify(d));
+        return `Request failed: ${payload.status ?? "unknown"}`;
     }
 
-    const api = {
-        getDashboardSummary: () => request('/financial/dashboard/summary'),
-        getFollowupContactable: (params = {}) => {
-            const q = new URLSearchParams();
-            if (params.limit) q.set('limit', params.limit);
-            if (params.offset) q.set('offset', params.offset);
-            if (params.search) q.set('search', params.search);
-            return request('/financial/followup/contactable?' + q);
-        },
-        getFollowupDaily: (params = {}) => {
-            const q = new URLSearchParams();
-            if (params.limit) q.set('limit', params.limit);
-            if (params.offset) q.set('offset', params.offset);
-            if (params.search) q.set('search', params.search);
-            return request('/financial/followup/daily?' + q);
-        },
-        getSchedulingTop300: (params = {}) => {
-            const q = new URLSearchParams();
-            if (params.limit) q.set('limit', params.limit || 300);
-            if (params.offset) q.set('offset', params.offset);
-            if (params.search) q.set('search', params.search);
-            return request('/financial/scheduling/top300?' + q);
-        },
-        getSchedulingPriority: (params = {}) => {
-            const q = new URLSearchParams();
-            if (params.limit) q.set('limit', params.limit || 500);
-            if (params.offset) q.set('offset', params.offset);
-            if (params.scheduling_band) q.set('scheduling_band', params.scheduling_band);
-            if (params.action_type) q.set('action_type', params.action_type);
-            if (params.financial_tier) q.set('financial_tier', params.financial_tier);
-            return request('/financial/scheduling/priority?' + q);
-        },
-        getPatientLookup: (mobile) => request('/financial/patient-lookup?mobile=' + encodeURIComponent(mobile || '')),
-        getPatients: (params = {}) => {
-            const q = new URLSearchParams();
-            if (params.search) q.set('search', params.search);
-            if (params.limit) q.set('limit', params.limit || 50);
-            return request('/patients?' + q);
-        },
-        getTreatmentTypes: () => request('/treatment-types'),
-        getPaymentTypes: () => request('/payment-types?mode=insurers'),
-        predictAppointment: (body) => request('/ai/predict-appointment', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        }),
-        patientHistoryScore: (id) => request('/ai/patient-history-score/' + id),
-        suggestSlots: (params) => {
-            const q = new URLSearchParams(params);
-            return request('/appointments/suggest-time?' + q);
-        },
-        createAppointment: (body) => request('/appointments', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        })
-    };
+    async function request(path, options = {}) {
+        const response = await fetch(path, {
+            headers: {
+                "Content-Type": "application/json",
+                ...(options.headers || {})
+            },
+            ...options
+        });
 
-    global.AtiehAPI = api;
-})(window);
+        let payload = null;
+        const text = await response.text();
+
+        try {
+            payload = text ? JSON.parse(text) : null;
+        } catch {
+            payload = text;
+        }
+
+        if (!response.ok) {
+            const message = extractErrorMessage(payload) || `Request failed: ${response.status}`;
+            throw new Error(message);
+        }
+
+        return payload;
+    }
+
+    return {
+        getDashboardSummary: () => request("/financial/dashboard/summary"),
+        getDashboardInsights: () => request("/financial/dashboard/insights"),
+        getDashboardKpis: () => request("/financial/dashboard/kpis"),
+        getDashboardTrends: (limit = 12) => request(`/financial/dashboard/trends?limit=${limit}`),
+        getTopVIPs: (limit = 10, offset = 0) => request(`/financial/top-vips?limit=${limit}&offset=${offset}`),
+        getPatientDetail: (recordNo) => request(`/financial/patient/${recordNo}`),
+
+        getFollowupQueue: (limit = 100, offset = 0) =>
+            request(`/financial/followup/contactable?limit=${limit}&offset=${offset}`),
+
+        getFollowupDaily: (limit = 100, offset = 0) =>
+            request(`/financial/followup/daily?limit=${limit}&offset=${offset}`),
+
+        getTop300: (limit = 100, offset = 0) =>
+            request(`/financial/scheduling/top300?limit=${limit}&offset=${offset}`),
+
+        getPriority: (limit = 100, offset = 0) =>
+            request(`/financial/scheduling/priority?limit=${limit}&offset=${offset}`),
+
+        patientLookup: (q = "", limit = 50, offset = 0) =>
+            request(`/financial/patient-lookup?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
+
+        getPatientsSearch: (q = "", limit = 50, offset = 0) =>
+            request(`/patients/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
+
+        getServicesCatalog: () => request("/ai/engine/catalog/services"),
+        getInsurancesCatalog: () => request("/ai/engine/catalog/insurances"),
+
+        recommendSlot: (payload) =>
+            request("/ai/engine/recommend-slot", {
+                method: "POST",
+                body: JSON.stringify(payload)
+            })
+    };
+})();

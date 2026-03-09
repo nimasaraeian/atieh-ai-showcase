@@ -1,495 +1,918 @@
-/**
- * Atieh Clinic Dashboard – App logic and pages
- */
-(function () {
-    'use strict';
+const App = (() => {
+    const state = {
+        route: "/",
+        trendsLimit: 12
+    };
 
-    const API = window.AtiehAPI;
-    const $ = id => document.getElementById(id);
-    const $q = (el, sel) => (el || document).querySelector(sel);
-    const $qa = (el, sel) => Array.from((el || document).querySelectorAll(sel));
+    const el = {
+        title: document.getElementById("page-title"),
+        subtitle: document.getElementById("page-subtitle"),
+        content: document.getElementById("page-content"),
+        toast: document.getElementById("toast"),
+        refreshBtn: document.getElementById("refreshBtn"),
+        modal: document.getElementById("patientModal"),
+        modalBody: document.getElementById("patientModalBody"),
+        modalRecordNo: document.getElementById("modalRecordNo"),
+        closeModalBtn: document.getElementById("closeModalBtn")
+    };
 
-    let currentRoute = '/';
-    let selectedPatient = null;
-    let selectedSlot = null;
-    let treatmentTypes = [];
-    let paymentTypes = [];
-
-    // ── Routing ─────────────────────────────────────────────────────────────
-    function getRoute() {
-        const hash = window.location.hash || '#/';
-        return hash.slice(1) || '/';
+    function formatNumber(value) {
+        if (value === null || value === undefined || value === "") return "-";
+        return new Intl.NumberFormat("en-US").format(Number(value));
     }
 
-    function navigate(route) {
-        window.location.hash = route || '/';
+    function formatMoney(value) {
+        if (value === null || value === undefined) return "-";
+        return `${formatNumber(Math.round(Number(value)))} ریال`;
     }
 
-    function render(route) {
-        currentRoute = route || getRoute();
-        $qa('.nav-item').forEach(a => {
-            a.classList.toggle('active', a.getAttribute('data-route') === currentRoute || (currentRoute === '/' && a.getAttribute('data-route') === '/'));
+    function escapeHtml(str) {
+        return String(str ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
+
+    function badgeClass(value) {
+        const v = String(value || "").toLowerCase();
+
+        if (["ready", "active", "fully_populated", "present", "success"].includes(v)) return "badge badge--success";
+        if (["critical", "high", "present_but_small"].includes(v)) return "badge badge--danger";
+        if (["elevated", "moderate", "warning", "partial"].includes(v)) return "badge badge--warning";
+        return "badge badge--info";
+    }
+
+    function showToast(message) {
+        el.toast.textContent = message;
+        el.toast.classList.add("show");
+        clearTimeout(showToast._timer);
+        showToast._timer = setTimeout(() => {
+            el.toast.classList.remove("show");
+        }, 3000);
+    }
+
+    function setLoading(message = "در حال بارگذاری...") {
+        el.content.innerHTML = `<div class="loading-state">${message}</div>`;
+    }
+
+    function setError(message) {
+        el.content.innerHTML = `<div class="error-state">خطا: ${escapeHtml(message)}</div>`;
+    }
+
+    function updateNav() {
+        document.querySelectorAll(".nav-link").forEach(link => {
+            const route = link.dataset.route;
+            link.classList.toggle("active", route === state.route);
         });
-        const titles = { '/': 'داشبورد', '/appointment': 'نوبت جدید', '/followup': 'صف پیگیری روزانه', '/top300': 'اولویت نوبت ۳۰۰', '/priority': 'اولویت AI', '/patients': 'جستجوی بیمار' };
-        const titleEl = $('page-title');
-        const subtitleEl = $('page-subtitle');
-        if (titleEl) titleEl.textContent = titles[currentRoute] || 'داشبورد';
-        const subtitles = { '/': 'خلاصه وضعیت عملیاتی', '/appointment': 'ثبت نوبت با پیشنهاد AI', '/followup': 'صف پیگیری روزانه متعادل', '/top300': '۳۰۰ بیمار برتر', '/priority': 'فیلتر بر اساس باند و نوع اقدام', '/patients': 'جستجو در صف قابل تماس' };
-        if (subtitleEl) subtitleEl.textContent = subtitles[currentRoute] || '';
-        const content = $('page-content');
-        if (!content) { console.error('page-content not found'); return; }
-        if (currentRoute === '/') renderDashboard(content);
-        else if (currentRoute === '/appointment') renderAppointment(content);
-        else if (currentRoute === '/followup') renderFollowup(content);
-        else if (currentRoute === '/top300') renderTop300(content);
-        else if (currentRoute === '/priority') renderPriority(content);
-        else if (currentRoute === '/patients') renderPatients(content);
     }
 
-    // ── Toast ───────────────────────────────────────────────────────────────
-    function toast(msg, type = 'info') {
-        const el = $('toast');
-        if (!el) return;
-        el.textContent = msg;
-        el.className = 'toast show';
-        setTimeout(() => el.classList.remove('show'), 3000);
+    function setPageMeta(title, subtitle) {
+        el.title.textContent = title;
+        el.subtitle.textContent = subtitle;
+        updateNav();
     }
 
-    // ── Reusable components ─────────────────────────────────────────────────
-    function Loading() { return '<div class="loading">در حال بارگذاری...</div>'; }
-    function Empty(msg) { return '<div class="empty">' + (msg || 'هیچ داده‌ای یافت نشد') + '</div>'; }
-    function Error(msg) { return '<div class="error">' + (msg || 'خطا در بارگذاری') + '</div>'; }
-
-    function fmtNum(n) { return n != null ? Number(n).toLocaleString('fa-IR') : '–'; }
-
-    function badgeClass(score) {
-        if (typeof score !== 'number') return 'badge--neutral';
-        if (score >= 90) return 'badge--danger';
-        if (score >= 70) return 'badge--warning';
-        return 'badge--accent';
+    function normalizeHashRoute() {
+        const hash = window.location.hash || "#/";
+        const route = hash.replace(/^#/, "") || "/";
+        state.route = route;
     }
 
-    // ── Dashboard ───────────────────────────────────────────────────────────
-    async function renderDashboard(container) {
-        container.innerHTML = Loading();
+    async function render() {
+        normalizeHashRoute();
+
+        if (state.route === "/") return renderDashboard();
+        if (state.route === "/followup") return renderFollowup();
+        if (state.route === "/top300") return renderTop300();
+        if (state.route === "/priority") return renderPriority();
+        if (state.route === "/patients") return renderPatients();
+        if (state.route === "/appointment") return renderAppointment();
+
+        setPageMeta("صفحه یافت نشد", "مسیر انتخاب شده معتبر نیست");
+        el.content.innerHTML = `<div class="empty-state">این بخش هنوز پیاده‌سازی نشده است.</div>`;
+    }
+
+    async function renderDashboard() {
+        setPageMeta("داشبورد مدیریتی", "نمای کلی وضعیت مالی، عملیاتی و هوشمند کلینیک");
+        setLoading("در حال بارگذاری داشبورد...");
+
         try {
-            const d = await API.getDashboardSummary();
-            container.innerHTML = `
-                <div class="stats-grid">
-                    <div class="stat-card stat-card--accent">
-                        <div class="stat-card__value">${fmtNum(d.total_followup_contactable)}</div>
-                        <div class="stat-card__label">پیگیری قابل تماس</div>
-                    </div>
-                    <div class="stat-card stat-card--accent">
-                        <div class="stat-card__value">${fmtNum(d.total_daily_balanced)}</div>
-                        <div class="stat-card__label">صف روزانه متعادل</div>
-                    </div>
-                    <div class="stat-card stat-card--accent">
-                        <div class="stat-card__value">${fmtNum(d.total_scheduling_top300)}</div>
-                        <div class="stat-card__label">اولویت نوبت ۳۰۰</div>
-                    </div>
-                    <div class="stat-card stat-card--danger">
-                        <div class="stat-card__value">${fmtNum(d.critical_priority_count)}</div>
-                        <div class="stat-card__label">بحرانی</div>
-                    </div>
-                    <div class="stat-card stat-card--warning">
-                        <div class="stat-card__value">${fmtNum(d.high_priority_count)}</div>
-                        <div class="stat-card__label">بالا</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-card__value">${fmtNum(d.medium_priority_count)}</div>
-                        <div class="stat-card__label">متوسط</div>
-                    </div>
-                </div>
-                <div class="quick-links" style="margin-top:1.5rem">
-                    <a href="#/followup" class="quick-link">صف پیگیری روزانه</a>
-                    <a href="#/top300" class="quick-link">اولویت نوبت ۳۰۰</a>
-                    <a href="#/priority" class="quick-link">اولویت AI</a>
-                    <a href="#/appointment" class="quick-link">نوبت جدید</a>
-                    <a href="#/patients" class="quick-link">جستجوی بیمار</a>
-                </div>
-            `;
-        } catch (e) {
-            container.innerHTML = Error('خطا در بارگذاری داشبورد');
-        }
-    }
+            const [kpis, summary, insights, trends, vipData] = await Promise.all([
+                API.getDashboardKpis(),
+                API.getDashboardSummary(),
+                API.getDashboardInsights(),
+                API.getDashboardTrends(state.trendsLimit),
+                API.getTopVIPs(10, 0)
+            ]);
 
-    // ── Data table (reusable, sortable) ─────────────────────────────────────
-    function renderTable(container, columns, rows, opts = {}) {
-        if (!rows || rows.length === 0) {
-            container.innerHTML = Empty(opts.emptyMsg);
-            return;
-        }
-        let sortedRows = rows.slice();
-        let sortCol = null;
-        let sortDir = 1;
+            const trendMaxRevenue = Math.max(...trends.data.map(x => Number(x.total_revenue || 0)), 1);
 
-        function render() {
-            const th = columns.map((c, i) => {
-                const isSorted = sortCol === i;
-                const arrow = isSorted ? (sortDir > 0 ? ' ▲' : ' ▼') : '';
-                return '<th class="th-sort" data-col="' + i + '">' + c.label + arrow + '</th>';
-            }).join('');
-            const trs = sortedRows.map(r => {
-                const tds = columns.map(c => {
-                    let v = c.get ? c.get(r) : (r[c.key] ?? '–');
-                    if (c.badge) v = '<span class="badge ' + badgeClass(v) + '">' + v + '</span>';
-                    if (c.fmt === 'number') v = fmtNum(v);
-                    return '<td>' + (v != null && v !== '' ? v : '–') + '</td>';
-                }).join('');
-                return '<tr>' + tds + '</tr>';
-            }).join('');
-            container.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + th + '</tr></thead><tbody>' + trs + '</tbody></table></div>';
-            container.querySelectorAll('.th-sort').forEach(th => {
-                th.addEventListener('click', () => {
-                    const col = +th.dataset.col;
-                    if (sortCol === col) sortDir *= -1; else { sortCol = col; sortDir = 1; }
-                    const k = columns[col].key;
-                    sortedRows.sort((a, b) => {
-                        const va = a[k];
-                        const vb = b[k];
-                        if (va == null && vb == null) return 0;
-                        if (va == null) return sortDir;
-                        if (vb == null) return -sortDir;
-                        return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-                    });
-                    render();
-                });
-            });
-        }
-        render();
-    }
+            el.content.innerHTML = `
+                <section class="grid grid--kpis">
+                    ${renderKpiCard("کل درآمد ردیابی‌شده", formatMoney(kpis.total_revenue), "مجموع ارزش مالی ثبت‌شده در موتور مالی")}
+                    ${renderKpiCard("هویت‌های مالی", formatNumber(kpis.total_financial_identities), "کل record_no های تحلیل‌شده")}
+                    ${renderKpiCard("میانگین درآمد هر هویت", formatMoney(kpis.avg_revenue_per_identity), "میانگین ارزش مالی هر identity")}
+                    ${renderKpiCard("VIP + HIGH", formatNumber(kpis.vip_plus_high_count), `${formatNumber(kpis.vip_count)} مورد VIP`)}
+                    ${renderKpiCard("صف پیگیری قابل تماس", formatNumber(kpis.total_followup_contactable), `Backlog تقریبی: ${formatNumber(kpis.followup_backlog_days)} روز`)}
+                    ${renderKpiCard("صف اولویت 300", formatNumber(kpis.total_scheduling_top300), `${formatNumber(kpis.critical_priority_count)} مورد بحرانی`)}
+                    ${renderKpiCard("VIP Count", formatNumber(summary.vip_count), "بیماران با بالاترین ارزش مالی")}
+                    ${renderKpiCard("سطح آمادگی سیستم", insights.system_status === "ready" ? "READY" : "PARTIAL", "وضعیت فعلی لایه تصمیم‌سازی")}
+                </section>
 
-    // ── Followup page ───────────────────────────────────────────────────────
-    async function renderFollowup(container) {
-        const search = (container.getAttribute('data-search') || '').trim();
-        container.innerHTML = Loading();
-        try {
-            const res = await API.getFollowupDaily({ limit: 500, search: search || undefined });
-            const cols = [
-                { label: 'نام بیمار', key: 'patient_name_canonical' },
-                { label: 'موبایل', key: 'mobile_canonical' },
-                { label: 'ردۀ مالی', key: 'financial_tier' },
-                { label: 'نوع اقدام', key: 'action_type' },
-                { label: 'امتیاز', key: 'action_priority_score' },
-                { label: 'درآمد کل', key: 'lifetime_net_received', fmt: 'number' },
-                { label: 'آخرین پرداخت', key: 'last_payment_date_raw' },
-                { label: 'توصیه پیگیری', key: 'followup_recommendation' }
-            ];
-            container.innerHTML = `
-                <div class="panel">
-                    <div class="panel__header">
-                        <div class="toolbar">
-                            <input type="text" class="input" id="followup-search" placeholder="جستجو نام یا موبایل..." value="${(search || '')}">
-                            <button class="btn btn--outline" id="followup-refresh">بروزرسانی</button>
+                <section class="grid grid--main">
+                    <div class="card">
+                        <div class="card__header">
+                            <div>
+                                <h3 class="card__title">روند 12 دوره اخیر</h3>
+                                <div class="card__subtitle">بر اساس last_payment_date_raw</div>
+                            </div>
+                        </div>
+                        <div class="card__body">
+                            <div class="spark-bars">
+                                ${trends.data.map(item => `
+                                    <div class="spark-row">
+                                        <div class="spark-row__label">${escapeHtml(item.period)}</div>
+                                        <div class="spark-bar">
+                                            <div class="spark-bar__fill" style="width:${Math.max(3, (Number(item.total_revenue || 0) / trendMaxRevenue) * 100)}%"></div>
+                                        </div>
+                                        <div class="spark-row__value">${formatNumber(Math.round(item.total_revenue || 0))}</div>
+                                    </div>
+                                `).join("")}
+                            </div>
                         </div>
                     </div>
-                    <div class="panel__body">
-                        <div id="followup-table"></div>
-                    </div>
-                </div>
-            `;
-            renderTable($('followup-table'), cols, res.data || []);
-            $('followup-search').addEventListener('input', debounce(() => {
-                container.setAttribute('data-search', $('followup-search').value);
-                renderFollowup(container);
-            }, 400));
-            $('followup-refresh').addEventListener('click', () => renderFollowup(container));
-        } catch (e) {
-            container.innerHTML = Error();
-        }
-    }
 
-    // ── Top300 page ─────────────────────────────────────────────────────────
-    async function renderTop300(container) {
-        const search = (container.getAttribute('data-search') || '').trim();
-        container.innerHTML = Loading();
-        try {
-            const res = await API.getSchedulingTop300({ limit: 300, search: search || undefined });
-            const cols = [
-                { label: 'نام بیمار', key: 'patient_name_canonical' },
-                { label: 'موبایل', key: 'mobile_canonical' },
-                { label: 'ردۀ مالی', key: 'financial_tier' },
-                { label: 'نوع اقدام', key: 'action_type' },
-                { label: 'امتیاز', key: 'scheduling_priority_score', badge: true },
-                { label: 'باند', key: 'scheduling_band' },
-                { label: 'درآمد کل', key: 'lifetime_net_received', fmt: 'number' },
-                { label: 'آخرین پرداخت', key: 'last_payment_date_raw' }
-            ];
-            container.innerHTML = `
-                <div class="panel">
-                    <div class="panel__header">
-                        <div class="toolbar">
-                            <input type="text" class="input" id="top300-search" placeholder="جستجو نام یا موبایل..." value="${(search || '')}">
-                            <button class="btn btn--outline" id="top300-refresh">بروزرسانی</button>
+                    <div class="card">
+                        <div class="card__header">
+                            <div>
+                                <h3 class="card__title">Insight مدیریتی</h3>
+                                <div class="card__subtitle">تفسیر مستقیم موتور هوشمند</div>
+                            </div>
+                        </div>
+                        <div class="card__body">
+                            <div class="status-list">
+                                ${renderStatusItem("وضعیت سیستم", insights.system_status)}
+                                ${renderStatusItem("موتور مالی", insights.financial_engine_status)}
+                                ${renderStatusItem("وضعیت VIP", insights.vip_segment_status)}
+                                ${renderStatusItem("وضعیت backlog", insights.followup_backlog_status)}
+                                ${renderStatusItem("فشار scheduling", insights.scheduling_pressure_status)}
+                                ${renderStatusItem("صف اولویت", insights.priority_queue_status)}
+                            </div>
+
+                            <ul class="insight-list" style="margin-top:16px; padding:0;">
+                                ${(insights.insights || []).map(item => `<li>${escapeHtml(item)}</li>`).join("")}
+                            </ul>
                         </div>
                     </div>
-                    <div class="panel__body">
-                        <div id="top300-table"></div>
+                </section>
+
+                <section class="grid grid--bottom">
+                    <div class="card">
+                        <div class="card__header">
+                            <div>
+                                <h3 class="card__title">Top VIP Patients</h3>
+                                <div class="card__subtitle">بالاترین بیماران VIP بر اساس score و revenue</div>
+                            </div>
+                        </div>
+                        <div class="card__body">
+                            <div class="table-wrap">
+                                <table class="table">
+                                    <thead>
+                                        <tr>
+                                            <th>Record No</th>
+                                            <th>Tier</th>
+                                            <th>Score</th>
+                                            <th>Txn Count</th>
+                                            <th>Revenue</th>
+                                            <th>Last Payment</th>
+                                            <th>جزئیات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${(vipData.data || []).map(row => `
+                                            <tr>
+                                                <td>${escapeHtml(row.record_no)}</td>
+                                                <td>${escapeHtml(row.financial_tier)}</td>
+                                                <td>${Number(row.financial_value_score || 0).toFixed(4)}</td>
+                                                <td>${formatNumber(row.lifetime_txn_count)}</td>
+                                                <td>${formatNumber(Math.round(row.lifetime_net_received || 0))}</td>
+                                                <td>${escapeHtml(row.last_payment_date_raw)}</td>
+                                                <td>
+                                                    <button class="table__action-btn" data-record-no="${escapeHtml(row.record_no)}">
+                                                        مشاهده
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        `).join("")}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
-                </div>
+
+                    <div class="card">
+                        <div class="card__header">
+                            <div>
+                                <h3 class="card__title">شاخص‌های تکمیلی</h3>
+                                <div class="card__subtitle">ترکیب داده‌های summary و insights</div>
+                            </div>
+                        </div>
+                        <div class="card__body">
+                            <div class="metric-list">
+                                ${renderMetricItem("VIP Count", summary.vip_count)}
+                                ${renderMetricItem("HIGH Count", summary.high_count)}
+                                ${renderMetricItem("MEDIUM Count", summary.medium_count)}
+                                ${renderMetricItem("LOW Count", summary.low_count)}
+                                ${renderMetricItem("Critical Priority", summary.critical_priority_count)}
+                                ${renderMetricItem("High Priority", summary.high_priority_count)}
+                                ${renderMetricItem("Follow-up Daily", summary.total_daily_balanced)}
+                                ${renderMetricItem("Average Revenue / Identity", formatMoney(insights.metrics?.avg_revenue_per_identity))}
+                                ${renderMetricItem("VIP Share %", insights.metrics?.vip_share_pct)}
+                                ${renderMetricItem("VIP + HIGH Share %", insights.metrics?.high_plus_vip_share_pct)}
+                            </div>
+                            <p class="section-note" style="margin-top:16px;">
+                                این داشبورد اکنون مستقیم به لایه‌های summary، KPI، insight، VIP ranking و patient drill-down متصل است.
+                            </p>
+                        </div>
+                    </div>
+                </section>
             `;
-            renderTable($('top300-table'), cols, res.data || []);
-            $('top300-search').addEventListener('input', debounce(() => {
-                container.setAttribute('data-search', $('top300-search').value);
-                renderTop300(container);
-            }, 400));
-            $('top300-refresh').addEventListener('click', () => renderTop300(container));
-        } catch (e) {
-            container.innerHTML = Error();
+
+            bindVipButtons();
+        } catch (error) {
+            setError(error.message || "خطا در بارگذاری داشبورد");
         }
     }
 
-    // ── Priority page ───────────────────────────────────────────────────────
-    async function renderPriority(container) {
-        const band = container.getAttribute('data-band') || '';
-        const action = container.getAttribute('data-action') || '';
-        const tier = container.getAttribute('data-tier') || '';
-        container.innerHTML = Loading();
+    async function renderFollowup() {
+        setPageMeta("صف پیگیری", "نمایش بیماران قابل تماس برای follow-up");
+        setLoading();
+
         try {
-            const res = await API.getSchedulingPriority({
-                limit: 500,
-                scheduling_band: band || undefined,
-                action_type: action || undefined,
-                financial_tier: tier || undefined
-            });
-            const cols = [
-                { label: 'نام بیمار', key: 'patient_name_canonical' },
-                { label: 'موبایل', key: 'mobile_canonical' },
-                { label: 'ردۀ مالی', key: 'financial_tier' },
-                { label: 'نوع اقدام', key: 'action_type' },
-                { label: 'باند', key: 'scheduling_band' },
-                { label: 'امتیاز', key: 'scheduling_priority_score' },
-                { label: 'درآمد کل', key: 'lifetime_net_received', fmt: 'number' },
-                { label: 'آخرین پرداخت', key: 'last_payment_date_raw' }
-            ];
-            container.innerHTML = `
-                <div class="panel">
-                    <div class="panel__header">
-                <div class="toolbar filters">
-                    <select class="input" id="filter-band"><option value="">همه باندها</option><option value="CRITICAL_PRIORITY">بحرانی</option><option value="HIGH_PRIORITY">بالا</option><option value="MEDIUM_PRIORITY">متوسط</option></select>
-                    <select class="input" id="filter-action"><option value="">همه اقدامات</option><option value="VIP_ACTIVE">VIP_ACTIVE</option><option value="VIP_RECALL">VIP_RECALL</option><option value="HIGH_ACTIVE">HIGH_ACTIVE</option><option value="HIGH_RECALL">HIGH_RECALL</option><option value="PRIORITY_ACTIVE">PRIORITY_ACTIVE</option><option value="MEDIUM_WARM">MEDIUM_WARM</option><option value="MEDIUM_REACTIVATE">MEDIUM_REACTIVATE</option><option value="NORMAL">NORMAL</option></select>
-                    <select class="input" id="filter-tier"><option value="">همه رده‌ها</option><option value="VIP">VIP</option><option value="HIGH">HIGH</option><option value="MEDIUM">MEDIUM</option><option value="LOW">LOW</option></select>
-                    <button class="btn btn--outline" id="priority-refresh">بروزرسانی</button>
-                </div>
-                    </div>
-                    <div class="panel__body">
-                <div id="priority-table"></div>
-                    </div>
-                </div>
-            `;
-            $('filter-band').value = band;
-            $('filter-action').value = action;
-            $('filter-tier').value = tier;
-            renderTable($('priority-table'), cols, res.data || []);
-            $('filter-band').addEventListener('change', () => { container.setAttribute('data-band', $('filter-band').value); renderPriority(container); });
-            $('filter-action').addEventListener('change', () => { container.setAttribute('data-action', $('filter-action').value); renderPriority(container); });
-            $('filter-tier').addEventListener('change', () => { container.setAttribute('data-tier', $('filter-tier').value); renderPriority(container); });
-            $('priority-refresh').addEventListener('click', () => renderPriority(container));
-        } catch (e) {
-            container.innerHTML = Error();
+            const data = await API.getFollowupQueue(100, 0);
+            const rows = data.data || [];
+            el.content.innerHTML = renderSimpleTableCard(
+                "صف پیگیری قابل تماس",
+                "این لیست از v_financial_followup_queue_contactable خوانده می‌شود",
+                [
+                    "record_no",
+                    "patient_name_canonical",
+                    "mobile_canonical",
+                    "financial_tier",
+                    "action_type",
+                    "lifetime_net_received",
+                    "last_payment_date_raw"
+                ],
+                rows
+            );
+        } catch (error) {
+            setError(error.message);
         }
     }
 
-    // ── Patients search ─────────────────────────────────────────────────────
-    async function renderPatients(container) {
-        const search = (container.getAttribute('data-search') || '').trim();
-        container.innerHTML = `
-            <div class="panel">
-                <div class="panel__header">
-                    <label class="form-label">جستجو در صف پیگیری قابل تماس</label>
-                    <input type="text" class="input" id="patients-search" placeholder="نام یا موبایل..." value="${search}" style="max-width:320px">
+    async function renderTop300() {
+        setPageMeta("صف اولویت ۳۰۰", "بیماران منتخب برای scheduling priority");
+        setLoading();
+
+        try {
+            const data = await API.getTop300(100, 0);
+            const rows = data.data || [];
+            el.content.innerHTML = renderSimpleTableCard(
+                "Top 300 Scheduling Queue",
+                "خروجی v_financial_scheduling_queue_top300",
+                [
+                    "record_no",
+                    "patient_name_canonical",
+                    "financial_tier",
+                    "action_type",
+                    "scheduling_band",
+                    "scheduling_priority_score",
+                    "lifetime_net_received",
+                    "last_payment_date_raw"
+                ],
+                rows
+            );
+        } catch (error) {
+            setError(error.message);
+        }
+    }
+
+    async function renderPriority() {
+        setPageMeta("اولویت AI", "خروجی لایه scheduling priority");
+        setLoading();
+
+        try {
+            const data = await API.getPriority(100, 0);
+            const rows = data.data || [];
+            el.content.innerHTML = renderSimpleTableCard(
+                "Scheduling Priority",
+                "نمایش اولویت‌بندی تصمیم‌یار برای زمان‌بندی",
+                [
+                    "record_no",
+                    "patient_name_canonical",
+                    "financial_tier",
+                    "action_type",
+                    "scheduling_band",
+                    "scheduling_priority_score",
+                    "lifetime_net_received",
+                    "last_payment_date_raw"
+                ],
+                rows
+            );
+        } catch (error) {
+            setError(error.message);
+        }
+    }
+
+    async function renderPatients() {
+        setPageMeta("جستجوی بیمار", "نام بیمار، موبایل یا شماره پرونده را جستجو کنید");
+        el.content.innerHTML = `
+            <div class="card">
+                <div class="search-bar">
+                    <input id="patient-search" placeholder="نام بیمار، موبایل یا شماره پرونده">
+                    <button id="patient-search-btn" class="btn btn--primary">جستجو</button>
                 </div>
-                <div class="panel__body">
-                    <div id="patients-table"></div>
+
+                <div class="table-wrap">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>نام بیمار</th>
+                                <th>موبایل</th>
+                                <th>شماره پرونده</th>
+                                <th>سطح مالی</th>
+                                <th>در Top300</th>
+                                <th>در صف پیگیری</th>
+                                <th>درآمد</th>
+                                <th>جزئیات</th>
+                            </tr>
+                        </thead>
+                        <tbody id="patient-results"></tbody>
+                    </table>
                 </div>
             </div>
         `;
-        const tableEl = $('patients-table');
-        tableEl.innerHTML = Loading();
-        try {
-            const res = await API.getFollowupContactable({ limit: 300, search: search || undefined });
-            const cols = [
-                { label: 'نام بیمار', key: 'patient_name_canonical' },
-                { label: 'موبایل', key: 'mobile_canonical' },
-                { label: 'ردۀ مالی', key: 'financial_tier' },
-                { label: 'نوع اقدام', key: 'action_type' },
-                { label: 'امتیاز', key: 'action_priority_score' },
-                { label: 'درآمد کل', key: 'lifetime_net_received', fmt: 'number' },
-                { label: 'آخرین پرداخت', key: 'last_payment_date_raw' },
-                { label: 'توصیه', key: 'followup_recommendation' }
-            ];
-            renderTable(tableEl, cols, res.data || []);
-        } catch (e) {
-            tableEl.innerHTML = Error();
-        }
-        $('patients-search').addEventListener('input', debounce(() => {
-            container.setAttribute('data-search', $('patients-search').value);
-            renderPatients(container);
-        }, 400));
+
+        document
+            .getElementById("patient-search-btn")
+            .addEventListener("click", searchPatient);
+
+        document
+            .getElementById("patient-search")
+            .addEventListener("keypress", function (e) {
+                if (e.key === "Enter") {
+                    searchPatient();
+                }
+            });
     }
 
-    // ── New Appointment ─────────────────────────────────────────────────────
-    async function renderAppointment(container) {
-        container.innerHTML = Loading();
+    async function searchPatient() {
+        const inputEl = document.getElementById("patient-search");
+        const q = (inputEl && inputEl.value || "").trim();
+        if (!q) return;
+
+        const tbody = document.getElementById("patient-results");
+        if (!tbody) return;
+
+        tbody.innerHTML = `<tr><td colspan="8">در حال جستجو...</td></tr>`;
+
         try {
-        if (typeof API === 'undefined') {
-            container.innerHTML = Error('خطا: API بارگذاری نشده.');
-            return;
+            const result = await API.getPatientsSearch(q, 50, 0);
+            const rows = Array.isArray(result?.data) ? result.data : [];
+            const count = result?.count ?? rows.length;
+
+            tbody.innerHTML = "";
+
+            if (rows.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8">بیماری پیدا نشد</td></tr>`;
+                return;
+            }
+
+            rows.forEach(p => {
+                const tr = document.createElement("tr");
+                const recordNo = p.record_no ?? p.recordNo ?? "-";
+                const hasDetail = recordNo && String(recordNo) !== "-";
+                const patientName = p.patient_name ?? p.patient_name_canonical ?? "-";
+                const mobile = p.mobile ?? p.mobile_canonical ?? "-";
+                const inTop300 = p.in_top300 ? "بله" : "-";
+                const inFollowup = p.in_followup_queue ? "بله" : "-";
+                const revenue = p.lifetime_net_received != null
+                    ? String(Math.round(Number(p.lifetime_net_received)).toLocaleString())
+                    : "-";
+                tr.innerHTML = `
+                    <td>${escapeHtml(patientName)}</td>
+                    <td>${escapeHtml(mobile)}</td>
+                    <td>${escapeHtml(recordNo)}</td>
+                    <td>${escapeHtml(p.financial_tier ?? "-")}</td>
+                    <td>${escapeHtml(inTop300)}</td>
+                    <td>${escapeHtml(inFollowup)}</td>
+                    <td>${escapeHtml(revenue)}</td>
+                    <td>${hasDetail ? `<button class="table__action-btn" data-record-no="${escapeHtml(String(recordNo))}">مشاهده</button>` : "-"}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            bindVipButtons();
+        } catch (err) {
+            console.error("patient search error:", err);
+            const msg = err && err.message ? String(err.message) : "خطا در اتصال به سرور";
+            tbody.innerHTML = `<tr><td colspan="8">${escapeHtml(msg)}</td></tr>`;
         }
-        if (!treatmentTypes.length) {
-            try { treatmentTypes = await API.getTreatmentTypes(); } catch (_) {}
-            treatmentTypes = Array.isArray(treatmentTypes) ? treatmentTypes : (treatmentTypes?.value || []);
-        }
-        if (!paymentTypes.length) {
-            try { paymentTypes = await API.getPaymentTypes(); } catch (_) {}
-            paymentTypes = Array.isArray(paymentTypes) ? paymentTypes : (paymentTypes?.value || []);
-        }
-        const treatOpts = (treatmentTypes || []).map(t => '<option value="' + (t.id || t.value || '') + '">' + (t.label || t.name || t.id || '') + '</option>').join('');
-        const payOpts = (paymentTypes || []).map(p => '<option value="' + (p.id || p.value || '') + '">' + (p.label || p.name || p.id || '') + '</option>').join('');
-        container.innerHTML = `
-            <div class="card" style="max-width:560px">
-                <h3 class="card-title">ثبت نوبت جدید</h3>
-                <div class="form-group autocomplete">
-                    <label class="form-label">بیمار</label>
-                    <input type="text" class="input" id="apt-patient" placeholder="نام یا موبایل..." autocomplete="off">
-                    <div id="apt-results" class="autocomplete-results" style="display:none"></div>
+    }
+
+    async function renderAppointment() {
+        setPageMeta("نوبت جدید", "اتصال مستقیم به AI Scheduling Engine");
+        el.content.innerHTML = `
+            <div class="grid" style="grid-template-columns: 1.1fr 0.9fr;">
+                <div class="card">
+                    <div class="card__header">
+                        <div>
+                            <h3 class="card__title">فرم پیشنهاد نوبت هوشمند</h3>
+                            <div class="card__subtitle">خدمات، بیمه و پارامترهای کلیدی را وارد کنید</div>
+                        </div>
+                    </div>
+                    <div class="card__body">
+                        <form id="appointmentAiForm" class="detail-list">
+                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
+                                <div style="width:100%;">
+                                    <div class="detail-item__label" style="margin-bottom:8px;">Record No</div>
+                                    <input id="apptRecordNo" type="text" placeholder="مثلاً 139990" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;" />
+                                </div>
+                            </div>
+
+                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
+                                <div style="width:100%;">
+                                    <div class="detail-item__label" style="margin-bottom:8px;">کد خدمت / Service</div>
+                                    <select id="apptService" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;">
+                                        <option value="">در حال بارگذاری...</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
+                                <div style="width:100%;">
+                                    <div class="detail-item__label" style="margin-bottom:8px;">بیمه / Insurance</div>
+                                    <select id="apptInsurance" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;">
+                                        <option value="">در حال بارگذاری...</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
+                                <div style="width:100%;">
+                                    <div class="detail-item__label" style="margin-bottom:8px;">روز هفته ترجیحی</div>
+                                    <select id="apptWeekday" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;">
+                                        <option value="">بدون ترجیح</option>
+                                        <option value="شنبه">شنبه</option>
+                                        <option value="یکشنبه">یکشنبه</option>
+                                        <option value="دوشنبه">دوشنبه</option>
+                                        <option value="سه‌شنبه">سه‌شنبه</option>
+                                        <option value="چهارشنبه">چهارشنبه</option>
+                                        <option value="پنجشنبه">پنجشنبه</option>
+                                        <option value="جمعه">جمعه</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
+                                <div style="width:100%;">
+                                    <div class="detail-item__label" style="margin-bottom:8px;">درمان نیمه‌کاره / Backlog (اختیاری)</div>
+                                    <input id="apptBacklog" type="text" placeholder="مثلاً درمان ریشه" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;" />
+                                </div>
+                            </div>
+
+                            <div style="display:flex; gap:12px; margin-top:8px;">
+                                <button class="btn btn--primary" type="submit">دریافت پیشنهاد AI</button>
+                            </div>
+                        </form>
+                    </div>
                 </div>
-                <div id="apt-financial" class="patient-financial" style="display:none"></div>
-                <div class="form-group">
-                    <label class="form-label">نوع درمان</label>
-                    <select class="input" id="apt-treatment"><option value="">انتخاب...</option>${treatOpts}</select>
+
+                <div class="card">
+                    <div class="card__header">
+                        <div>
+                            <h3 class="card__title">نتیجه پیشنهاد نوبت</h3>
+                            <div class="card__subtitle">خروجی AI Scheduling Engine</div>
+                        </div>
+                    </div>
+                    <div class="card__body">
+                        <div id="appointmentAiResult" class="empty-state">هنوز درخواستی ارسال نشده است.</div>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">نوع پرداخت</label>
-                    <select class="input" id="apt-payment"><option value="">انتخاب...</option>${payOpts}</select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">تاریخ/زمان (اختیاری)</label>
-                    <input type="datetime-local" class="input" id="apt-date">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">یادداشت</label>
-                    <textarea class="input" id="apt-notes" rows="2"></textarea>
-                </div>
-                <div style="margin-top:1rem">
-                    <button class="btn btn--outline" id="apt-suggest">پیشنهاد زمان</button>
-                    <button class="btn btn--primary" id="apt-submit" disabled>ثبت نوبت</button>
-                </div>
-            </div>
-            <div class="card" style="margin-top:1rem;max-width:400px">
-                <h3 class="card-title">پیشنهادات AI</h3>
-                <div id="apt-ai-summary">امتیاز پایه: – | امتیاز AI: –</div>
-                <div id="apt-slots" class="slots"></div>
             </div>
         `;
 
-        const patientInput = $('apt-patient');
-        const resultsEl = $('apt-results');
-        const financialEl = $('apt-financial');
+        const serviceSelect = document.getElementById("apptService");
+        const insuranceSelect = document.getElementById("apptInsurance");
+        const form = document.getElementById("appointmentAiForm");
+        const resultBox = document.getElementById("appointmentAiResult");
 
-        patientInput.addEventListener('input', debounce(async () => {
-            const q = patientInput.value.trim();
-            if (q.length < 2) { resultsEl.style.display = 'none'; return; }
-            try {
-                const res = await API.getPatients({ search: q, limit: 10 });
-                const list = Array.isArray(res) ? res : [];
-                if (!list.length) { resultsEl.innerHTML = '<div class="autocomplete-item">یافت نشد</div>'; }
-                else {
-                    resultsEl.innerHTML = list.map(p => '<div class="autocomplete-item" data-id="' + p.id + '" data-name="' + (p.name||'') + '" data-phone="' + (p.phone||'') + '">' + (p.name||'') + ' – ' + (p.phone||'') + '</div>').join('');
-                    resultsEl.querySelectorAll('.autocomplete-item').forEach(el => {
-                        el.addEventListener('click', () => {
-                            selectedPatient = { id: el.dataset.id, name: el.dataset.name, phone: el.dataset.phone };
-                            patientInput.value = (el.dataset.name || '') + ' – ' + (el.dataset.phone || '');
-                            resultsEl.style.display = 'none';
-                            updateAptSubmit();
-                            fetchFinancialAndAI();
-                        });
-                    });
+        try {
+            const [servicesRaw, insurancesRaw] = await Promise.all([
+                API.getServicesCatalog(),
+                API.getInsurancesCatalog()
+            ]);
+
+            const services = normalizeCatalogList(servicesRaw);
+            const insurances = normalizeCatalogList(insurancesRaw);
+
+            if (services.length > 0) {
+                serviceSelect.innerHTML = `<option value="">انتخاب خدمت</option>` +
+                    services.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
+            } else {
+                serviceSelect.innerHTML = `<option value="">بدون کاتالوگ - لطفاً دستی وارد کنید</option>`;
+                serviceSelect.setAttribute("data-manual", "true");
+                const manualWrap = serviceSelect.closest(".detail-item");
+                if (manualWrap && !document.getElementById("apptServiceManual")) {
+                    const manualInput = document.createElement("input");
+                    manualInput.id = "apptServiceManual";
+                    manualInput.type = "text";
+                    manualInput.placeholder = "نام خدمت (فارسی) مثلاً کشیدن دندان";
+                    manualInput.style.cssText = "width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff; margin-top:8px;";
+                    manualWrap.appendChild(manualInput);
                 }
-                resultsEl.style.display = 'block';
-            } catch (_) { resultsEl.style.display = 'none'; }
-        }, 300));
+            }
 
-        patientInput.addEventListener('blur', () => setTimeout(() => { resultsEl.style.display = 'none'; }, 200));
-
-        function fetchFinancialAndAI() {
-            const phone = selectedPatient?.phone || '';
-            financialEl.style.display = 'none';
-            if (!phone) return;
-            API.getPatientLookup(phone).then(d => {
-                if (d.found && d.data) {
-                    financialEl.innerHTML = '<span class="badge badge--accent">' + (d.data.financial_tier||'') + '</span> <span class="badge badge--neutral">' + (d.data.action_type||'') + '</span> امتیاز: ' + (d.data.scheduling_priority_score ?? d.data.action_priority_score ?? '–');
-                    financialEl.style.display = 'flex';
-                }
-            }).catch(() => {});
-            if (selectedPatient?.id) API.patientHistoryScore(selectedPatient.id).then(h => {
-                $('apt-ai-summary').textContent = 'امتیاز پایه: ' + (h.history_score != null ? h.history_score.toFixed(1) : '–');
-            }).catch(() => {});
+            insuranceSelect.innerHTML = `<option value="">انتخاب بیمه</option>` +
+                insurances.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
+        } catch (error) {
+            console.error("catalog load error:", error);
+            serviceSelect.innerHTML = `<option value="">خطا در بارگذاری خدمات</option>`;
+            insuranceSelect.innerHTML = `<option value="">خطا در بارگذاری بیمه‌ها</option>`;
         }
 
-        function updateAptSubmit() {
-            const hasPatient = !!selectedPatient;
-            const treatment = $('apt-treatment')?.value;
-            const date = $('apt-date')?.value || selectedSlot;
-            $('apt-submit').disabled = !(hasPatient && treatment && (date || selectedSlot));
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            let serviceVal = (document.getElementById("apptService")?.value || "").trim();
+            const manualInput = document.getElementById("apptServiceManual");
+            if (manualInput && manualInput.value) serviceVal = manualInput.value.trim();
+            if (!serviceVal) {
+                resultBox.innerHTML = `<div class="error-state">لطفاً یک خدمت را انتخاب یا وارد کنید.</div>`;
+                return;
+            }
+
+            const payload = {
+                service: serviceVal,
+                insurance: (document.getElementById("apptInsurance")?.value || "").trim() || null,
+                backlog: (document.getElementById("apptBacklog")?.value || "").trim() || null,
+                doctor: null,
+                weekday: (document.getElementById("apptWeekday")?.value || "").trim() || null
+            };
+
+            resultBox.innerHTML = `<div class="loading-state">در حال دریافت پیشنهاد AI...</div>`;
+
+            try {
+                const result = await API.recommendSlot(payload);
+                resultBox.innerHTML = renderRecommendSlotResult(result);
+            } catch (error) {
+                const msg = (error && error.message) ? String(error.message) : "خطای نامشخص";
+                resultBox.innerHTML = `<div class="error-state">خطا در دریافت پیشنهاد: ${escapeHtml(msg)}</div>`;
+            }
+        });
+    }
+
+    function renderKpiCard(label, value, hint) {
+        return `
+            <div class="kpi">
+                <div class="kpi__label">${escapeHtml(label)}</div>
+                <div class="kpi__value">${escapeHtml(value)}</div>
+                <div class="kpi__hint">${escapeHtml(hint)}</div>
+            </div>
+        `;
+    }
+
+    function renderStatusItem(label, value) {
+        return `
+            <div class="status-item">
+                <div class="status-item__label">${escapeHtml(label)}</div>
+                <div class="status-item__value">
+                    <span class="${badgeClass(value)}">${escapeHtml(value)}</span>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderMetricItem(label, value) {
+        return `
+            <div class="metric-item">
+                <div class="metric-item__label">${escapeHtml(label)}</div>
+                <div class="metric-item__value">${escapeHtml(String(value ?? "-"))}</div>
+            </div>
+        `;
+    }
+
+    function normalizePatientLookupRow(row) {
+        const record_no =
+            row.record_no ??
+            row.recordNo ??
+            row.RecordNo ??
+            row.id ??
+            "-";
+
+        const patient_name =
+            row.patient_name_canonical ??
+            row.patient_name ??
+            row.name ??
+            row.full_name ??
+            row.patient_name_clean ??
+            "-";
+
+        const mobile =
+            row.mobile_canonical ??
+            row.mobile ??
+            row.phone ??
+            row.phone_norm ??
+            "-";
+
+        const financial_tier =
+            row.financial_tier ??
+            row.tier ??
+            "-";
+
+        const last_payment_date_raw =
+            row.last_payment_date_raw ??
+            row.last_payment ??
+            "-";
+
+        const revenue =
+            row.lifetime_net_received ??
+            row.revenue ??
+            null;
+
+        return {
+            record_no,
+            patient_name,
+            mobile,
+            financial_tier,
+            last_payment_date_raw,
+            lifetime_net_received_display: revenue !== null ? formatMoney(revenue) : "-"
+        };
+    }
+
+    function normalizeCatalogList(payload) {
+        let raw = [];
+
+        if (Array.isArray(payload)) raw = payload;
+        else if (Array.isArray(payload.data)) raw = payload.data;
+        else if (Array.isArray(payload.items)) raw = payload.items;
+        else if (Array.isArray(payload.results)) raw = payload.results;
+        else raw = [];
+
+        return raw.map((item, index) => {
+            if (typeof item === "string" || typeof item === "number") {
+                return { value: String(item), label: String(item) };
+            }
+
+            const value =
+                item.value ??
+                item.code ??
+                item.id ??
+                item.name ??
+                item.title ??
+                String(index + 1);
+
+            const label =
+                item.label ??
+                item.name ??
+                item.title ??
+                item.value ??
+                item.code ??
+                String(value);
+
+            return {
+                value: String(value),
+                label: String(label)
+            };
+        });
+    }
+
+    function renderRecommendSlotResult(result) {
+        if (!result || typeof result !== "object") {
+            return `<div class="empty-state">خروجی معتبری از AI دریافت نشد.</div>`;
         }
 
-        $('apt-treatment').addEventListener('change', () => { updateAptSubmit(); if (selectedPatient) API.predictAppointment({ patient_id: selectedPatient.id, treatment_type: $('apt-treatment').value, payment_type: $('apt-payment').value || undefined }).then(d => { $('apt-ai-summary').textContent = 'امتیاز پایه: ' + (d.history_score != null ? d.history_score.toFixed(1) : '–') + ' | امتیاز AI: ' + (d.ai_priority_score != null ? d.ai_priority_score.toFixed(1) : '–'); }).catch(() => {}); });
-        $('apt-payment').addEventListener('change', updateAptSubmit);
-        $('apt-date').addEventListener('change', updateAptSubmit);
+        const parts = [];
 
-        $('apt-suggest').addEventListener('click', async () => {
-            if (!selectedPatient || !$('apt-treatment').value) { toast('بیمار و نوع درمان را انتخاب کنید', 'error'); return; }
-            try {
-                const res = await API.suggestSlots({ treatment_type: $('apt-treatment').value, patient_id: selectedPatient.id, max_suggestions: 5 });
-                const slots = res.suggested_times || res.suggestions || [];
-                const slotsEl = $('apt-slots');
-                slotsEl.innerHTML = '';
-                slots.forEach(s => {
-                    const d = new Date(s);
-                    const btn = document.createElement('button');
-                    btn.className = 'slot-btn';
-                    btn.textContent = d.toLocaleDateString('fa-IR') + ' ' + d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-                    btn.addEventListener('click', () => {
-                        $qa('.slot-btn').forEach(b => b.classList.remove('selected'));
-                        btn.classList.add('selected');
-                        selectedSlot = s;
-                        updateAptSubmit();
-                    });
-                    slotsEl.appendChild(btn);
-                });
-                toast(slots.length ? slots.length + ' زمان پیشنهاد شد' : 'زمانی یافت نشد');
-            } catch (e) { toast('خطا'); }
+        if (result.run_id) {
+            parts.push(`<div class="detail-item"><div class="detail-item__label">Run ID</div><div class="detail-item__value">${escapeHtml(String(result.run_id))}</div></div>`);
+        }
+
+        if (result.input && typeof result.input === "object") {
+            parts.push(`<h4 style="margin:16px 0 8px;">ورودی</h4><div class="detail-list">${
+                Object.entries(result.input).map(([k, v]) => detailItem(k, v)).join("")
+            }</div>`);
+        }
+
+        if (result.draft && typeof result.draft === "object" && Object.keys(result.draft).length > 0) {
+            parts.push(`<h4 style="margin:16px 0 8px;">پیشنهاد اصلی</h4><div class="detail-list">${
+                Object.entries(result.draft).map(([k, v]) => detailItem(k, v)).join("")
+            }</div>`);
+        }
+
+        const recs = Array.isArray(result.recommendations) ? result.recommendations : [];
+        if (recs.length > 0) {
+            const cols = recs[0] && typeof recs[0] === "object" ? Object.keys(recs[0]) : [];
+            const headerRow = cols.length ? `<tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr>` : "";
+            const bodyRows = recs.slice(0, 10).map(r =>
+                `<tr>${cols.map(c => `<td>${escapeHtml(String(r[c] ?? "-"))}</td>`).join("")}</tr>`
+            ).join("");
+            parts.push(`<h4 style="margin:16px 0 8px;">پیشنهادات (${recs.length})</h4><div class="table-wrap"><table class="table"><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table></div>`);
+        }
+
+        if (result.counts && typeof result.counts === "object") {
+            parts.push(`<div class="detail-list" style="margin-top:12px;">${
+                Object.entries(result.counts).map(([k, v]) => detailItem(k, v)).join("")
+            }</div>`);
+        }
+
+        if (parts.length === 0) {
+            const entries = flattenObject(result);
+            if (!entries.length) return `<div class="empty-state">خروجی معتبری از AI دریافت نشد.</div>`;
+            parts.push(`<div class="detail-list">${entries.map(([k, v]) => detailItem(k, v)).join("")}</div>`);
+        }
+
+        return `<div class="detail-card"><h4>پاسخ AI Scheduling Engine</h4>${parts.join("")}</div>`;
+    }
+
+    function flattenObject(obj, prefix = "") {
+        const rows = [];
+
+        if (obj === null || obj === undefined) {
+            rows.push([prefix || "value", "-"]);
+            return rows;
+        }
+
+        if (typeof obj !== "object") {
+            rows.push([prefix || "value", String(obj)]);
+            return rows;
+        }
+
+        if (Array.isArray(obj)) {
+            if (!obj.length) {
+                rows.push([prefix || "list", "[]"]);
+                return rows;
+            }
+
+            obj.forEach((item, idx) => {
+                if (typeof item === "object" && item !== null) {
+                    rows.push(...flattenObject(item, `${prefix}[${idx}]`));
+                } else {
+                    rows.push([`${prefix}[${idx}]`, String(item)]);
+                }
+            });
+            return rows;
+        }
+
+        Object.entries(obj).forEach(([key, value]) => {
+            const nextKey = prefix ? `${prefix}.${key}` : key;
+            if (typeof value === "object" && value !== null) {
+                rows.push(...flattenObject(value, nextKey));
+            } else {
+                rows.push([nextKey, String(value ?? "-")]);
+            }
         });
 
-        $('apt-submit').addEventListener('click', async () => {
-            if (!selectedPatient || !$('apt-treatment').value) return;
-            const date = selectedSlot || $('apt-date').value;
-            if (!date) { toast('زمان را انتخاب کنید'); return; }
-            try {
-                await API.createAppointment({ patient_id: selectedPatient.id, treatment_type: $('apt-treatment').value, appointment_date: new Date(date).toISOString(), payment_type: $('apt-payment').value || undefined, notes: $('apt-notes').value || undefined });
-                toast('نوبت ثبت شد');
-                selectedPatient = null; selectedSlot = null;
-                patientInput.value = ''; $('apt-treatment').value = ''; $('apt-payment').value = ''; $('apt-date').value = ''; $('apt-notes').value = '';
-                $('apt-slots').innerHTML = ''; financialEl.style.display = 'none';
-            } catch (e) { toast('خطا در ثبت'); }
+        return rows;
+    }
+
+    function renderSimpleTableCard(title, subtitle, columns, rows) {
+        const head = columns.map(col => `<th>${escapeHtml(col)}</th>`).join("");
+        const body = rows.length
+            ? rows.map(row => `
+                <tr>
+                    ${columns.map(col => `<td>${escapeHtml(row[col] ?? "-")}</td>`).join("")}
+                </tr>
+            `).join("")
+            : `<tr><td colspan="${columns.length}">داده‌ای یافت نشد.</td></tr>`;
+
+        return `
+            <div class="card">
+                <div class="card__header">
+                    <div>
+                        <h3 class="card__title">${escapeHtml(title)}</h3>
+                        <div class="card__subtitle">${escapeHtml(subtitle)}</div>
+                    </div>
+                </div>
+                <div class="card__body">
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead><tr>${head}</tr></thead>
+                            <tbody>${body}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function bindVipButtons() {
+        document.querySelectorAll("[data-record-no]").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const recordNo = btn.getAttribute("data-record-no");
+                await openPatientModal(recordNo);
+            });
         });
-        } catch (e) {
-            container.innerHTML = Error('خطا در بارگذاری: ' + (e.message || 'نامشخص'));
+    }
+
+    async function openPatientModal(recordNo) {
+        try {
+            el.modalRecordNo.textContent = `Record No: ${recordNo}`;
+            el.modalBody.innerHTML = `<div class="loading-state">در حال بارگذاری جزئیات بیمار...</div>`;
+            el.modal.classList.remove("hidden");
+
+            const data = await API.getPatientDetail(recordNo);
+            const p = data.financial_profile || {};
+            const o = data.operational_status || {};
+
+            el.modalBody.innerHTML = `
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <h4>پروفایل مالی</h4>
+                        <div class="detail-list">
+                            ${detailItem("Financial Tier", p.financial_tier)}
+                            ${detailItem("Financial Score", p.financial_value_score)}
+                            ${detailItem("Lifetime Txn Count", p.lifetime_txn_count)}
+                            ${detailItem("Lifetime Revenue", formatMoney(p.lifetime_net_received))}
+                            ${detailItem("Patient Paid", formatMoney(p.lifetime_patient_paid))}
+                            ${detailItem("Insurer Paid", formatMoney(p.lifetime_insurer_paid))}
+                            ${detailItem("Negative Net", formatMoney(p.lifetime_negative_net))}
+                            ${detailItem("Negative Txn Count", p.lifetime_negative_txn_count)}
+                            ${detailItem("Cash Txn Count", p.cash_txn_count)}
+                            ${detailItem("Insurance Txn Count", p.insurance_txn_count)}
+                            ${detailItem("Recent Txn Count", p.recent_txn_count)}
+                            ${detailItem("Recent Net Revenue", formatMoney(p.recent_net_received))}
+                        </div>
+                    </div>
+
+                    <div class="detail-card">
+                        <h4>وضعیت عملیاتی</h4>
+                        <div class="detail-list">
+                            ${detailItem("Record No", p.record_no)}
+                            ${detailItem("First Payment", p.first_payment_date_raw)}
+                            ${detailItem("Last Payment", p.last_payment_date_raw)}
+                            ${detailItem("Has Date Range", p.has_date_range)}
+                            ${detailItem("In Follow-up Queue", o.in_followup_queue)}
+                            ${detailItem("Follow-up Action", o.followup_action_type)}
+                            ${detailItem("In Scheduling Top300", o.in_scheduling_top300)}
+                            ${detailItem("Scheduling Band", o.scheduling_band)}
+                            ${detailItem("Scheduling Score", o.scheduling_priority_score)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch (error) {
+            el.modalBody.innerHTML = `<div class="error-state">خطا در دریافت جزئیات: ${escapeHtml(error.message)}</div>`;
         }
     }
 
-    function debounce(fn, ms) {
-        let t;
-        return function () { clearTimeout(t); t = setTimeout(() => fn.apply(this, arguments), ms); };
+    function detailItem(label, value) {
+        let display = "-";
+        if (value != null && value !== "") {
+            if (typeof value === "object") {
+                try {
+                    display = JSON.stringify(value, null, 2);
+                } catch {
+                    display = String(value);
+                }
+            } else {
+                display = String(value);
+            }
+        }
+        return `
+            <div class="detail-item">
+                <div class="detail-item__label">${escapeHtml(label)}</div>
+                <div class="detail-item__value">${escapeHtml(display)}</div>
+            </div>
+        `;
     }
 
-    // ── Init ─────────────────────────────────────────────────────────────────
-    window.addEventListener('hashchange', () => render());
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => render());
-    } else {
-        render();
+    function bindGlobalEvents() {
+        window.addEventListener("hashchange", render);
+
+        el.refreshBtn.addEventListener("click", async () => {
+            await render();
+            showToast("داشبورد بروزرسانی شد");
+        });
+
+        el.closeModalBtn.addEventListener("click", closeModal);
+        el.modal.addEventListener("click", (e) => {
+            if (e.target.dataset.close === "true") closeModal();
+        });
     }
+
+    function closeModal() {
+        el.modal.classList.add("hidden");
+    }
+
+    async function init() {
+        bindGlobalEvents();
+        await render();
+    }
+
+    return { init };
 })();
+
+document.addEventListener("DOMContentLoaded", App.init);

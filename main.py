@@ -71,6 +71,9 @@ app.include_router(engine_router)
 app.include_router(financial_operational_router)
 app.include_router(frontend_api.router)
 
+# Patient search must be registered before /patients/{patient_id} to match /patients/search
+from app.api.patient_search import search_patients as _search_patients_impl
+
 # -----------------------------
 # CORS (permissive for local dev)
 # -----------------------------
@@ -379,6 +382,20 @@ def ai_recommend_slot(
 # =============================
 # Lightweight Patients API (SQLite, for frontend)
 # =============================
+
+
+@app.get("/patients/search")
+def patients_search(
+    q: str | None = Query(default=None, description="Search: record_no, name, or mobile"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Global patient search – searches v_financial_identity_profile + patients fallback.
+    Returns: { count, data: [{ record_no, patient_name, mobile, financial_tier,
+      lifetime_net_received, last_payment_date_raw, in_top300, in_followup_queue }] }
+    """
+    return _search_patients_impl(q, limit, offset)
 
 
 @app.get("/patients")
