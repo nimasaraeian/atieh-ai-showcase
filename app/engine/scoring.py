@@ -290,17 +290,27 @@ def calculate_time_score(
     start_time: str,
 ) -> float:
     """
-    Time preference score in [0, 1], earlier slots receive higher scores.
+    Time preference score in [0, 1], with a **soft** preference for earlier slots.
 
-    For each shift block, we map start_time linearly from 1.0 (earliest) to
-    0.0 (latest) within that block. When parsing fails, we return a neutral 0.5.
+    Design goals:
+      - Morning slots are still slightly preferred.
+      - Scores are noticeably **flatter** across valid business hours so that
+        08:00 does not heavily dominate 08:30 / 09:00 / 10:00.
+
+    Implementation:
+      - Compute a linear position of start_time within the shift window.
+      - Map earliest → 1.0 and latest → 0.0 (as before).
+      - Then compress the dynamic range to [0.6, 1.0] so time_score becomes
+        a gentle nudge instead of a dominating factor.
+
+    When parsing fails, we return a neutral 0.7.
     """
     try:
         from app.engine.time_blocks import SHIFT_BLOCKS_MINUTES
         from datetime import datetime
 
         if shift_code not in SHIFT_BLOCKS_MINUTES:
-            return 0.5
+            return 0.7
 
         span_start, span_end = SHIFT_BLOCKS_MINUTES[shift_code]
         span = max(1, span_end - span_start)
@@ -311,10 +321,17 @@ def calculate_time_score(
         # Clamp to [span_start, span_end]
         t_min = max(span_start, min(span_end, t_min))
 
-        # Earlier is better: 1.0 at earliest, 0.0 at latest
-        return max(0.0, min(1.0, 1.0 - (t_min - span_start) / span))
+        # Earlier is better: 1.0 at earliest, 0.0 at latest (raw linear score)
+        raw = 1.0 - (t_min - span_start) / span
+        raw = max(0.0, min(1.0, raw))
+
+        # Compress into [0.6, 1.0] so that time preference is softer.
+        # Example: earliest=1.0, mid-shift≈0.8, latest≈0.6.
+        base = 0.6
+        amplitude = 0.4
+        return base + amplitude * raw
     except Exception:
-        return 0.5
+        return 0.7
 
 
 def calculate_complexity_fit_score(

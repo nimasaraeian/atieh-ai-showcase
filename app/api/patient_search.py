@@ -15,6 +15,7 @@ Enrichment: in_top300, in_followup_queue from operational views.
 import os
 import sqlite3
 import logging
+import re
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
     if not q:
         return {"count": 0, "data": []}
 
+    # Tokenize the query for order-insensitive name search (e.g. "رضایی علیرضا" vs "علیرضا رضایی")
+    # Filter tokens with length >= 2 to avoid single-char noise (e.g. "ا" matching too broadly)
+    raw_tokens: List[str] = [t.strip() for t in re.split(r"\s+", q) if t and t.strip()]
+    name_tokens: List[str] = [t for t in raw_tokens if len(t) >= 2]
+
     conn = _get_conn()
     try:
         cur = conn.cursor()
@@ -65,16 +71,32 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
         try:
             where_parts = []
             params: List[Any] = []
+
+            # Numeric / record_no / mobile search (unchanged)
             if q_digits:
                 where_parts.append("record_no LIKE ?")
                 params.append(f"%{q_digits}%")
                 if len(q_digits) >= 5:
-                    where_parts.append("REPLACE(REPLACE(REPLACE(COALESCE(mobile_canonical,''),' ',''),'-',''),'۰','0') LIKE ?")
+                    where_parts.append(
+                        "REPLACE(REPLACE(REPLACE(COALESCE(mobile_canonical,''),' ',''),'-',''),'۰','0') LIKE ?"
+                    )
                     params.append(mobile_like)
-            where_parts.append("patient_name_canonical LIKE ?")
-            params.append(like)
+
+            # Name search: all tokens must match somewhere in patient_name_canonical (order-insensitive)
+            if name_tokens:
+                token_clauses = []
+                for token in name_tokens:
+                    token_clauses.append("patient_name_canonical LIKE ?")
+                    params.append(f"%{token}%")
+                where_parts.append("(" + " AND ".join(token_clauses) + ")")
+            else:
+                where_parts.append("patient_name_canonical LIKE ?")
+                params.append(like)
+
+            # Fallback mobile LIKE with original query text
             where_parts.append("mobile_canonical LIKE ?")
             params.append(like)
+
             where_sql = " OR ".join(where_parts)
 
             sql = f"""
@@ -110,20 +132,40 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
         # 2) Fallback: patients + patient_recordno_map (patients not in financial profile)
         if len(rows) < limit and q.strip():
             try:
-                cur.execute(
-                    """
+                # Build an order-insensitive token-based name search for patients.name
+                name_where_clauses: List[str] = []
+                name_params: List[Any] = []
+
+                if name_tokens:
+                    # Require all tokens to be present in the name (AND of LIKEs)
+                    name_where_clauses.append(
+                        "(" + " AND ".join(["p.name LIKE ?"] * len(name_tokens)) + ")"
+                    )
+                    name_params.extend([f"%{token}%" for token in name_tokens])
+                else:
+                    name_where_clauses.append("p.name LIKE ?")
+                    name_params.append(like)
+
+                # Also allow phone substring search (use original LIKE pattern)
+                name_where_clauses.append("p.phone LIKE ?")
+                name_params.append(like)
+
+                where_sql = " OR ".join(name_where_clauses)
+
+                sql = f"""
                     SELECT
                         prm.record_no,
                         p.name AS patient_name,
                         COALESCE(prm.phone_norm, p.phone) AS mobile
                     FROM patients p
                     LEFT JOIN patient_recordno_map prm ON prm.patient_id = p.id
-                    WHERE p.name LIKE ? OR p.phone LIKE ?
+                    WHERE {where_sql}
                     ORDER BY p.id DESC
                     LIMIT ?
-                    """,
-                    (like, like, limit - len(rows) + 50),
-                )
+                """
+                params = name_params + [limit - len(rows) + 50]
+
+                cur.execute(sql, params)
                 for r in cur.fetchall():
                     d = dict(r)
                     rn = (d.get("record_no") or "").strip() if d.get("record_no") else ""

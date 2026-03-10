@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-from fastapi import APIRouter
+from app.engine.db_schedule_recommender import recommend_slots_from_db
+from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict
 import os
@@ -42,3 +43,6 @@ def recommend_slot(req: EngineRequest) -> Dict[str, Any]:
             "schedule_draft_csv": draft_path if os.path.exists(draft_path) else None,
         },
     }
+@router.post("/recommend-slot-db")
+def recommend_slot_db(payload: dict = Body(...)):
+    return recommend_slots_from_db(payload, top_n=200)

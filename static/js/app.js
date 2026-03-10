@@ -35,6 +35,13 @@ const App = (() => {
             .replaceAll("'", "&#039;");
     }
 
+    function formatMobileDisplay(mobile) {
+        const m = String(mobile ?? "").trim();
+        if (!m) return "-";
+        if (m.toUpperCase().startsWith("UNKNOWN_")) return "موبایل نامشخص";
+        return m;
+    }
+
     function badgeClass(value) {
         const v = String(value || "").toLowerCase();
 
@@ -83,7 +90,8 @@ const App = (() => {
     async function render() {
         normalizeHashRoute();
 
-        if (state.route === "/") return renderDashboard();
+        if (state.route === "/") return renderStaffDashboard();
+        if (state.route === "/manager") return renderManagerDashboard();
         if (state.route === "/followup") return renderFollowup();
         if (state.route === "/top300") return renderTop300();
         if (state.route === "/priority") return renderPriority();
@@ -94,9 +102,95 @@ const App = (() => {
         el.content.innerHTML = `<div class="empty-state">این بخش هنوز پیاده‌سازی نشده است.</div>`;
     }
 
-    async function renderDashboard() {
-        setPageMeta("داشبورد مدیریتی", "نمای کلی وضعیت مالی، عملیاتی و هوشمند کلینیک");
-        setLoading("در حال بارگذاری داشبورد...");
+    async function renderStaffDashboard() {
+        setPageMeta("داشبورد عملیاتی", "صفحه کاری روزانه برای پذیرش و پرسنل کلینیک");
+
+        el.content.innerHTML = `
+            <section class="grid grid--main">
+                <div class="card">
+                    <div class="card__header">
+                        <div>
+                            <h3 class="card__title">جستجوی سریع بیمار</h3>
+                            <div class="card__subtitle">نام بیمار، موبایل یا شماره پرونده را جستجو کنید</div>
+                        </div>
+                    </div>
+                    <div class="card__body">
+                        <div class="search-bar">
+                            <input id="patient-search" placeholder="مثلاً احمدی رضا، رضا احمدی یا شماره پرونده" />
+                            <button id="patient-search-btn" class="btn btn--primary">جستجو</button>
+                        </div>
+                        <div class="table-wrap" style="margin-top:16px;">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>نام بیمار</th>
+                                        <th>موبایل</th>
+                                        <th>شماره پرونده</th>
+                                        <th>آخرین پرداخت</th>
+                                        <th>در Top300</th>
+                                        <th>در صف پیگیری</th>
+                                        <th>جزئیات</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="patient-results">
+                                    <tr>
+                                        <td colspan="7" class="empty-state">برای شروع، نام، موبایل یا شماره پرونده را وارد کنید.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card__header">
+                        <div>
+                            <h3 class="card__title">میانبرهای کاری</h3>
+                            <div class="card__subtitle">دسترسی سریع به بخش‌های اصلی سیستم</div>
+                        </div>
+                    </div>
+                    <div class="card__body">
+                        <div class="quick-actions" style="display:flex; flex-wrap:wrap; gap:8px;">
+                            <button class="btn btn--secondary" data-nav="#/patients">جستجوی پیشرفته بیمار</button>
+                            <button class="btn btn--secondary" data-nav="#/followup">صف پیگیری</button>
+                            <button class="btn btn--secondary" data-nav="#/top300">اولویت ۳۰۰</button>
+                            <button class="btn btn--secondary" data-nav="#/priority">اولویت AI</button>
+                            <button class="btn btn--secondary" data-nav="#/appointment">درخواست نوبت هوشمند</button>
+                            <a href="/manager" class="btn btn--secondary">داشبورد مدیریتی (مدیر)</a>
+                        </div>
+                        <p class="section-note" style="margin-top:16px;">
+                            این صفحه برای استفاده روزانه پرسنل طراحی شده است و فقط اطلاعات عملیاتی را نمایش می‌دهد.
+                        </p>
+                    </div>
+                </div>
+            </section>
+        `;
+
+        document
+            .getElementById("patient-search-btn")
+            .addEventListener("click", searchPatient);
+
+        document
+            .getElementById("patient-search")
+            .addEventListener("keypress", function (e) {
+                if (e.key === "Enter") {
+                    searchPatient();
+                }
+            });
+
+        document.querySelectorAll(".quick-actions [data-nav]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const target = btn.getAttribute("data-nav");
+                if (target) {
+                    window.location.hash = target;
+                }
+            });
+        });
+    }
+
+    async function renderManagerDashboard() {
+        setPageMeta("داشبورد مدیریتی", "نمای کلی وضعیت مالی و اجرایی (نمای مدیر / دسترسی محدود)");
+        setLoading("در حال بارگذاری داشبورد مدیریتی...");
 
         try {
             const [kpis, summary, insights, trends, vipData] = await Promise.all([
@@ -110,6 +204,10 @@ const App = (() => {
             const trendMaxRevenue = Math.max(...trends.data.map(x => Number(x.total_revenue || 0)), 1);
 
             el.content.innerHTML = `
+                <div class="manager-banner" style="background:linear-gradient(135deg,#1e3a5f 0%,#0f172a 100%);border:1px solid rgba(59,130,246,0.4);border-radius:12px;padding:12px 16px;margin-bottom:20px;display:flex;align-items:center;gap:12px;">
+                    <span style="font-weight:600;color:#93c5fd;">پنل مدیریتی</span>
+                    <span style="color:rgba(255,255,255,0.7);font-size:0.9em;">این بخش ویژه مدیریت است — گزارش‌های مالی و اجرایی</span>
+                </div>
                 <section class="grid grid--kpis">
                     ${renderKpiCard("کل درآمد ردیابی‌شده", formatMoney(kpis.total_revenue), "مجموع ارزش مالی ثبت‌شده در موتور مالی")}
                     ${renderKpiCard("هویت‌های مالی", formatNumber(kpis.total_financial_identities), "کل record_no های تحلیل‌شده")}
@@ -238,9 +336,46 @@ const App = (() => {
                         </div>
                     </div>
                 </section>
+                
+                <section class="card ai-suggestions-card">
+                    <div class="card__header">
+                        <div>
+                            <h3 class="card__title">AI Suggestions Review</h3>
+                            <div class="card__subtitle">بررسی و تایید/رد پیشنهادهای نوبت‌دهی AI</div>
+                        </div>
+                        <button id="aiSuggestionsRefreshBtn" class="btn btn--secondary">Refresh Suggestions</button>
+                    </div>
+                    <div class="card__body">
+                        <div class="table-wrap">
+                            <table class="table" id="aiSuggestionsTable">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Record No</th>
+                                        <th>Patient Name</th>
+                                        <th>Service Name</th>
+                                        <th>Insurance Name</th>
+                                        <th>Suggested Slot</th>
+                                        <th>Priority Band</th>
+                                        <th>Priority Score</th>
+                                        <th>Status</th>
+                                        <th>Notes</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="aiSuggestionsTbody">
+                                    <tr>
+                                        <td colspan="11">در حال بارگذاری پیشنهادها...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
             `;
 
             bindVipButtons();
+            bindAiSuggestionsSection();
         } catch (error) {
             setError(error.message || "خطا در بارگذاری داشبورد");
         }
@@ -342,10 +477,9 @@ const App = (() => {
                                 <th>نام بیمار</th>
                                 <th>موبایل</th>
                                 <th>شماره پرونده</th>
-                                <th>سطح مالی</th>
+                                <th>آخرین پرداخت</th>
                                 <th>در Top300</th>
                                 <th>در صف پیگیری</th>
-                                <th>درآمد</th>
                                 <th>جزئیات</th>
                             </tr>
                         </thead>
@@ -376,7 +510,7 @@ const App = (() => {
         const tbody = document.getElementById("patient-results");
         if (!tbody) return;
 
-        tbody.innerHTML = `<tr><td colspan="8">در حال جستجو...</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="loading-state">در حال جستجو...</td></tr>`;
 
         try {
             const result = await API.getPatientsSearch(q, 50, 0);
@@ -386,7 +520,7 @@ const App = (() => {
             tbody.innerHTML = "";
 
             if (rows.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8">بیماری پیدا نشد</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-state">بیمار پیدا نشد. با نام خانوادگی، شماره موبایل یا شماره پرونده جستجو کنید.</td></tr>`;
                 return;
             }
 
@@ -395,20 +529,17 @@ const App = (() => {
                 const recordNo = p.record_no ?? p.recordNo ?? "-";
                 const hasDetail = recordNo && String(recordNo) !== "-";
                 const patientName = p.patient_name ?? p.patient_name_canonical ?? "-";
-                const mobile = p.mobile ?? p.mobile_canonical ?? "-";
+                const mobileDisplay = formatMobileDisplay(p.mobile ?? p.mobile_canonical);
+                const lastPayment = p.last_payment_date_raw ?? "-";
                 const inTop300 = p.in_top300 ? "بله" : "-";
                 const inFollowup = p.in_followup_queue ? "بله" : "-";
-                const revenue = p.lifetime_net_received != null
-                    ? String(Math.round(Number(p.lifetime_net_received)).toLocaleString())
-                    : "-";
                 tr.innerHTML = `
                     <td>${escapeHtml(patientName)}</td>
-                    <td>${escapeHtml(mobile)}</td>
+                    <td>${escapeHtml(mobileDisplay)}</td>
                     <td>${escapeHtml(recordNo)}</td>
-                    <td>${escapeHtml(p.financial_tier ?? "-")}</td>
+                    <td>${escapeHtml(lastPayment)}</td>
                     <td>${escapeHtml(inTop300)}</td>
                     <td>${escapeHtml(inFollowup)}</td>
-                    <td>${escapeHtml(revenue)}</td>
                     <td>${hasDetail ? `<button class="table__action-btn" data-record-no="${escapeHtml(String(recordNo))}">مشاهده</button>` : "-"}</td>
                 `;
                 tbody.appendChild(tr);
@@ -418,87 +549,58 @@ const App = (() => {
         } catch (err) {
             console.error("patient search error:", err);
             const msg = err && err.message ? String(err.message) : "خطا در اتصال به سرور";
-            tbody.innerHTML = `<tr><td colspan="8">${escapeHtml(msg)}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" class="error-state">${escapeHtml(msg)}</td></tr>`;
         }
     }
 
     async function renderAppointment() {
-        setPageMeta("نوبت جدید", "اتصال مستقیم به AI Scheduling Engine");
+        setPageMeta("نوبت جدید", "AI Scheduling Engine");
         el.content.innerHTML = `
-            <div class="grid" style="grid-template-columns: 1.1fr 0.9fr;">
-                <div class="card">
-                    <div class="card__header">
-                        <div>
-                            <h3 class="card__title">فرم پیشنهاد نوبت هوشمند</h3>
-                            <div class="card__subtitle">خدمات، بیمه و پارامترهای کلیدی را وارد کنید</div>
+            <div class="ai-scheduling">
+                <div class="ai-scheduling__left">
+                    <form id="appointmentAiForm" class="ai-form">
+                        <div class="ai-form__field">
+                            <label class="ai-form__label">Record No</label>
+                            <input id="apptRecordNo" type="text" class="ai-form__input" placeholder="e.g. 139990" />
                         </div>
-                    </div>
-                    <div class="card__body">
-                        <form id="appointmentAiForm" class="detail-list">
-                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
-                                <div style="width:100%;">
-                                    <div class="detail-item__label" style="margin-bottom:8px;">Record No</div>
-                                    <input id="apptRecordNo" type="text" placeholder="مثلاً 139990" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;" />
-                                </div>
-                            </div>
-
-                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
-                                <div style="width:100%;">
-                                    <div class="detail-item__label" style="margin-bottom:8px;">کد خدمت / Service</div>
-                                    <select id="apptService" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;">
-                                        <option value="">در حال بارگذاری...</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
-                                <div style="width:100%;">
-                                    <div class="detail-item__label" style="margin-bottom:8px;">بیمه / Insurance</div>
-                                    <select id="apptInsurance" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;">
-                                        <option value="">در حال بارگذاری...</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
-                                <div style="width:100%;">
-                                    <div class="detail-item__label" style="margin-bottom:8px;">روز هفته ترجیحی</div>
-                                    <select id="apptWeekday" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;">
-                                        <option value="">بدون ترجیح</option>
-                                        <option value="شنبه">شنبه</option>
-                                        <option value="یکشنبه">یکشنبه</option>
-                                        <option value="دوشنبه">دوشنبه</option>
-                                        <option value="سه‌شنبه">سه‌شنبه</option>
-                                        <option value="چهارشنبه">چهارشنبه</option>
-                                        <option value="پنجشنبه">پنجشنبه</option>
-                                        <option value="جمعه">جمعه</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="detail-item" style="border-bottom:0; padding-bottom:0;">
-                                <div style="width:100%;">
-                                    <div class="detail-item__label" style="margin-bottom:8px;">درمان نیمه‌کاره / Backlog (اختیاری)</div>
-                                    <input id="apptBacklog" type="text" placeholder="مثلاً درمان ریشه" style="width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff;" />
-                                </div>
-                            </div>
-
-                            <div style="display:flex; gap:12px; margin-top:8px;">
-                                <button class="btn btn--primary" type="submit">دریافت پیشنهاد AI</button>
-                            </div>
-                        </form>
-                    </div>
+                        <div class="ai-form__field">
+                            <label class="ai-form__label">Service</label>
+                            <select id="apptService" class="ai-form__input ai-form__select">
+                                <option value="">در حال بارگذاری...</option>
+                            </select>
+                        </div>
+                        <div class="ai-form__field">
+                            <label class="ai-form__label">Insurance</label>
+                            <select id="apptInsurance" class="ai-form__input ai-form__select">
+                                <option value="">در حال بارگذاری...</option>
+                            </select>
+                        </div>
+                        <div class="ai-form__field">
+                            <label class="ai-form__label">Preferred Day</label>
+                            <select id="apptWeekday" class="ai-form__input ai-form__select">
+                                <option value="">بدون ترجیح</option>
+                                <option value="شنبه">شنبه</option>
+                                <option value="یکشنبه">یکشنبه</option>
+                                <option value="دوشنبه">دوشنبه</option>
+                                <option value="سه‌شنبه">سه‌شنبه</option>
+                                <option value="چهارشنبه">چهارشنبه</option>
+                                <option value="پنجشنبه">پنجشنبه</option>
+                                <option value="جمعه">جمعه</option>
+                            </select>
+                        </div>
+                        <div class="ai-form__field">
+                            <label class="ai-form__label">Backlog (optional)</label>
+                            <input id="apptBacklog" type="text" class="ai-form__input" placeholder="e.g. درمان ریشه" />
+                        </div>
+                        <div class="ai-form__submit">
+                            <button class="ai-form__btn" type="submit">Generate AI Suggestion</button>
+                        </div>
+                    </form>
                 </div>
-
-                <div class="card">
-                    <div class="card__header">
-                        <div>
-                            <h3 class="card__title">نتیجه پیشنهاد نوبت</h3>
-                            <div class="card__subtitle">خروجی AI Scheduling Engine</div>
-                        </div>
-                    </div>
-                    <div class="card__body">
-                        <div id="appointmentAiResult" class="empty-state">هنوز درخواستی ارسال نشده است.</div>
+                <div class="ai-scheduling__right">
+                    <div class="ai-result-card">
+                        <h3 class="ai-result-card__title">AI Recommendations</h3>
+                        <div id="appointmentAiResult" class="ai-result-card__body ai-result-card__body--empty">No request sent yet. Fill the form and click Generate.</div>
                     </div>
                 </div>
             </div>
@@ -522,16 +624,17 @@ const App = (() => {
                 serviceSelect.innerHTML = `<option value="">انتخاب خدمت</option>` +
                     services.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
             } else {
-                serviceSelect.innerHTML = `<option value="">بدون کاتالوگ - لطفاً دستی وارد کنید</option>`;
+                serviceSelect.innerHTML = `<option value="">بدون کاتالوگ - دستی وارد کنید</option>`;
                 serviceSelect.setAttribute("data-manual", "true");
-                const manualWrap = serviceSelect.closest(".detail-item");
-                if (manualWrap && !document.getElementById("apptServiceManual")) {
+                const field = serviceSelect.closest(".ai-form__field");
+                if (field && !document.getElementById("apptServiceManual")) {
                     const manualInput = document.createElement("input");
                     manualInput.id = "apptServiceManual";
                     manualInput.type = "text";
-                    manualInput.placeholder = "نام خدمت (فارسی) مثلاً کشیدن دندان";
-                    manualInput.style.cssText = "width:100%; padding:14px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); color:#fff; margin-top:8px;";
-                    manualWrap.appendChild(manualInput);
+                    manualInput.className = "ai-form__input";
+                    manualInput.placeholder = "نام خدمت (فارسی)";
+                    manualInput.style.marginTop = "8px";
+                    field.appendChild(manualInput);
                 }
             }
 
@@ -539,8 +642,8 @@ const App = (() => {
                 insurances.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
         } catch (error) {
             console.error("catalog load error:", error);
-            serviceSelect.innerHTML = `<option value="">خطا در بارگذاری خدمات</option>`;
-            insuranceSelect.innerHTML = `<option value="">خطا در بارگذاری بیمه‌ها</option>`;
+            serviceSelect.innerHTML = `<option value="">خطا در بارگذاری</option>`;
+            insuranceSelect.innerHTML = `<option value="">خطا در بارگذاری</option>`;
         }
 
         form.addEventListener("submit", async (e) => {
@@ -550,9 +653,13 @@ const App = (() => {
             const manualInput = document.getElementById("apptServiceManual");
             if (manualInput && manualInput.value) serviceVal = manualInput.value.trim();
             if (!serviceVal) {
-                resultBox.innerHTML = `<div class="error-state">لطفاً یک خدمت را انتخاب یا وارد کنید.</div>`;
+                resultBox.className = "ai-result-card__body ai-result-card__body--error";
+                resultBox.innerHTML = `<div class="ai-result-error">لطفاً یک خدمت را انتخاب کنید.</div>`;
                 return;
             }
+
+            resultBox.className = "ai-result-card__body ai-result-card__body--loading";
+            resultBox.innerHTML = `<div class="ai-result-loading"><div class="ai-result-loading__spinner"></div><span>Calculating AI suggestions...</span></div>`;
 
             const payload = {
                 service: serviceVal,
@@ -562,14 +669,18 @@ const App = (() => {
                 weekday: (document.getElementById("apptWeekday")?.value || "").trim() || null
             };
 
-            resultBox.innerHTML = `<div class="loading-state">در حال دریافت پیشنهاد AI...</div>`;
-
             try {
                 const result = await API.recommendSlot(payload);
-                resultBox.innerHTML = renderRecommendSlotResult(result);
+                resultBox.className = "ai-result-card__body";
+                resultBox.innerHTML = renderRecommendSlotResult(result, true);
+                const bookBtn = resultBox.querySelector(".ai-book-recommended-btn");
+                if (bookBtn) {
+                    bookBtn.addEventListener("click", () => handleBookRecommended(result, resultBox));
+                }
             } catch (error) {
                 const msg = (error && error.message) ? String(error.message) : "خطای نامشخص";
-                resultBox.innerHTML = `<div class="error-state">خطا در دریافت پیشنهاد: ${escapeHtml(msg)}</div>`;
+                resultBox.className = "ai-result-card__body ai-result-card__body--error";
+                resultBox.innerHTML = `<div class="ai-result-error">${escapeHtml(msg)}</div>`;
             }
         });
     }
@@ -689,52 +800,155 @@ const App = (() => {
         });
     }
 
-    function renderRecommendSlotResult(result) {
+    const WEEKDAY_FA_TO_JS = { "شنبه": 6, "یکشنبه": 0, "دوشنبه": 1, "سه\u200cشنبه": 2, "سه‌شنبه": 2, "چهارشنبه": 3, "پنجشنبه": 4, "جمعه": 5 };
+
+    function nextDateForWeekday(weekdayFa, timeStr) {
+        const targetDow = WEEKDAY_FA_TO_JS[weekdayFa];
+        if (targetDow === undefined) return null;
+        const timePart = (timeStr || "").split("-")[0].trim() || "09:00";
+        const [h, m] = timePart.split(":").map((x) => parseInt(x, 10) || 0);
+        const now = new Date();
+        const currentDow = now.getDay();
+        let daysUntil = (targetDow - currentDow + 7) % 7;
+        if (daysUntil === 0 && (now.getHours() > h || (now.getHours() === h && now.getMinutes() >= m))) daysUntil = 7;
+        const d = new Date(now);
+        d.setDate(d.getDate() + daysUntil);
+        d.setHours(h, m, 0, 0);
+        const y = d.getFullYear(), M = String(d.getMonth() + 1).padStart(2, "0"), D = String(d.getDate()).padStart(2, "0");
+        const H = String(d.getHours()).padStart(2, "0"), Min = String(d.getMinutes()).padStart(2, "0");
+        return `${y}-${M}-${D}T${H}:${Min}:00`;
+    }
+
+    async function handleBookRecommended(result, resultBox) {
+        const recordNo = (document.getElementById("apptRecordNo")?.value || "").trim();
+        if (!recordNo) {
+            resultBox.innerHTML += `<div class="ai-result-error" style="margin-top:12px;">شماره پرونده را وارد کنید.</div>`;
+            return;
+        }
+        const draft = result?.draft && typeof result.draft === "object" ? result.draft : null;
+        const recs = Array.isArray(result?.recommendations) ? result.recommendations : [];
+        const primary = draft || recs[0] || null;
+        if (!primary) {
+            resultBox.innerHTML += `<div class="ai-result-error" style="margin-top:12px;">پیشنهادی برای ثبت وجود ندارد.</div>`;
+            return;
+        }
+        function val(r, ...keys) {
+            if (!r) return null;
+            for (const k of keys) {
+                const v = r[k];
+                if (v != null && v !== "" && v !== undefined) return String(v);
+            }
+            return null;
+        }
+        const weekday = val(primary, "weekday", "weekday_fa", "chosen_weekday");
+        const timeStr = val(primary, "time", "start_time");
+        const appointmentDate = nextDateForWeekday(weekday, timeStr);
+        if (!appointmentDate) {
+            resultBox.innerHTML += `<div class="ai-result-error" style="margin-top:12px;">امکان ساخت تاریخ از پیشنهاد وجود ندارد.</div>`;
+            return;
+        }
+        let patient_id;
+        try {
+            const resolved = await API.resolveRecordNo(recordNo);
+            patient_id = resolved?.patient_id;
+        } catch (e) {
+            resultBox.innerHTML += `<div class="ai-result-error" style="margin-top:12px;">بیمار با شماره پرونده ${escapeHtml(recordNo)} یافت نشد.</div>`;
+            return;
+        }
+        let serviceVal = (document.getElementById("apptService")?.value || "").trim();
+        const manualInput = document.getElementById("apptServiceManual");
+        if (manualInput && manualInput.value) serviceVal = manualInput.value.trim();
+        const insuranceVal = (document.getElementById("apptInsurance")?.value || "").trim() || null;
+        const payload = {
+            patient_id: Number(patient_id),
+            treatment_type: serviceVal,
+            payment_type: null,
+            appointment_date: appointmentDate,
+            notes: "AI recommended booking",
+        };
+        resultBox.className = "ai-result-card__body ai-result-card__body--loading";
+        resultBox.innerHTML = `<div class="ai-result-loading"><div class="ai-result-loading__spinner"></div><span>ثبت نوبت...</span></div>`;
+        try {
+            const created = await API.createAppointment(payload);
+            const dt = created?.appointment_date ? new Date(created.appointment_date) : null;
+            const dtStr = dt ? dt.toLocaleDateString("fa-IR", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+            resultBox.className = "ai-result-card__body";
+            resultBox.innerHTML = `
+                <div class="ai-rec-best"><span class="ai-rec-best__label">نوبت ثبت شد</span></div>
+                <div class="ai-rec-row"><span class="ai-rec-label">شناسه نوبت</span><span class="ai-rec-value">${escapeHtml(String(created?.id ?? "-"))}</span></div>
+                <div class="ai-rec-row"><span class="ai-rec-label">تاریخ و زمان</span><span class="ai-rec-value">${escapeHtml(dtStr)}</span></div>
+                <div class="ai-rec-row"><span class="ai-rec-label">پزشک</span><span class="ai-rec-value">${escapeHtml(val(primary, "doctor", "doctor_name", "doctor_display") || "-")}</span></div>
+            `;
+        } catch (err) {
+            const msg = (err && err.message) ? String(err.message) : "خطای نامشخص";
+            const is409 = msg.includes("409") || msg.toLowerCase().includes("duplicate") || msg.includes("تکراری");
+            resultBox.className = "ai-result-card__body ai-result-card__body--error";
+            resultBox.innerHTML = `<div class="ai-result-error">${is409 ? "این نوبت قبلاً ثبت شده است." : escapeHtml(msg)}</div>`;
+        }
+    }
+
+    function renderRecommendSlotResult(result, showBookButton) {
         if (!result || typeof result !== "object") {
-            return `<div class="empty-state">خروجی معتبری از AI دریافت نشد.</div>`;
+            return `<div class="ai-result-empty">خروجی معتبری از AI دریافت نشد.</div>`;
         }
 
-        const parts = [];
-
-        if (result.run_id) {
-            parts.push(`<div class="detail-item"><div class="detail-item__label">Run ID</div><div class="detail-item__value">${escapeHtml(String(result.run_id))}</div></div>`);
-        }
-
-        if (result.input && typeof result.input === "object") {
-            parts.push(`<h4 style="margin:16px 0 8px;">ورودی</h4><div class="detail-list">${
-                Object.entries(result.input).map(([k, v]) => detailItem(k, v)).join("")
-            }</div>`);
-        }
-
-        if (result.draft && typeof result.draft === "object" && Object.keys(result.draft).length > 0) {
-            parts.push(`<h4 style="margin:16px 0 8px;">پیشنهاد اصلی</h4><div class="detail-list">${
-                Object.entries(result.draft).map(([k, v]) => detailItem(k, v)).join("")
-            }</div>`);
-        }
-
+        const draft = result.draft && typeof result.draft === "object" ? result.draft : null;
         const recs = Array.isArray(result.recommendations) ? result.recommendations : [];
-        if (recs.length > 0) {
-            const cols = recs[0] && typeof recs[0] === "object" ? Object.keys(recs[0]) : [];
-            const headerRow = cols.length ? `<tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr>` : "";
-            const bodyRows = recs.slice(0, 10).map(r =>
-                `<tr>${cols.map(c => `<td>${escapeHtml(String(r[c] ?? "-"))}</td>`).join("")}</tr>`
-            ).join("");
-            parts.push(`<h4 style="margin:16px 0 8px;">پیشنهادات (${recs.length})</h4><div class="table-wrap"><table class="table"><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table></div>`);
+        const top5 = recs.slice(0, 5);
+        const primary = draft || recs[0] || null;
+
+        function val(r, ...keys) {
+            if (!r) return "-";
+            for (const k of keys) {
+                const v = r[k];
+                if (v != null && v !== "" && v !== undefined) return String(v);
+            }
+            return "-";
         }
 
-        if (result.counts && typeof result.counts === "object") {
-            parts.push(`<div class="detail-list" style="margin-top:12px;">${
-                Object.entries(result.counts).map(([k, v]) => detailItem(k, v)).join("")
-            }</div>`);
+        if (top5.length > 0) {
+            const bestScore = val(primary, "score", "confidence", "confidence_score");
+            let html = `<div class="ai-rec-best"><span class="ai-rec-best__label">Best AI Choice</span><span class="ai-rec-best__score">Confidence: ${escapeHtml(bestScore)}</span></div>`;
+            html += `<div class="ai-rec-table-wrap"><table class="ai-rec-table"><thead><tr><th>Rank</th><th>Weekday</th><th>Time</th><th>Doctor</th><th>Score</th></tr></thead><tbody>`;
+            top5.forEach((r, i) => {
+                const rank = i + 1;
+                const weekday = val(r, "weekday", "weekday_fa", "date");
+                const time = val(r, "time", "start_time");
+                const doctor = val(r, "doctor", "doctor_name", "doctor_display");
+                const score = val(r, "score", "confidence");
+                const rowClass = rank === 1 ? " ai-rec-table__row--best" : "";
+                html += `<tr class="ai-rec-table__row${rowClass}"><td>${rank}</td><td>${escapeHtml(weekday)}</td><td>${escapeHtml(time)}</td><td>${escapeHtml(doctor)}</td><td>${escapeHtml(score)}</td></tr>`;
+            });
+            html += `</tbody></table></div>`;
+            if (recs.length > 5) {
+                html += `<div class="ai-rec-more">${recs.length} total slots — showing top 5</div>`;
+            }
+            if (showBookButton) {
+                html += `<div style="margin-top:16px;"><button type="button" class="ai-book-recommended-btn btn btn--primary">ثبت نوبت پیشنهادی</button></div>`;
+            }
+            return html;
         }
 
-        if (parts.length === 0) {
-            const entries = flattenObject(result);
-            if (!entries.length) return `<div class="empty-state">خروجی معتبری از AI دریافت نشد.</div>`;
-            parts.push(`<div class="detail-list">${entries.map(([k, v]) => detailItem(k, v)).join("")}</div>`);
+        if (primary) {
+            const suggestedDate = val(primary, "weekday", "weekday_fa", "date", "suggested_date");
+            const suggestedTime = val(primary, "time", "start_time", "suggested_time");
+            const doctor = val(primary, "doctor", "doctor_name", "doctor_display");
+            const confidence = val(primary, "score", "confidence", "confidence_score");
+            let html = `
+                <div class="ai-rec-best"><span class="ai-rec-best__label">Best AI Choice</span><span class="ai-rec-best__score">Confidence: ${escapeHtml(confidence)}</span></div>
+                <div class="ai-rec-row"><span class="ai-rec-label">Weekday</span><span class="ai-rec-value">${escapeHtml(suggestedDate)}</span></div>
+                <div class="ai-rec-row"><span class="ai-rec-label">Time</span><span class="ai-rec-value">${escapeHtml(suggestedTime)}</span></div>
+                <div class="ai-rec-row"><span class="ai-rec-label">Doctor</span><span class="ai-rec-value">${escapeHtml(doctor)}</span></div>
+            `;
+            if (showBookButton) {
+                html += `<div style="margin-top:16px;"><button type="button" class="ai-book-recommended-btn btn btn--primary">ثبت نوبت پیشنهادی</button></div>`;
+            }
+            return html;
         }
 
-        return `<div class="detail-card"><h4>پاسخ AI Scheduling Engine</h4>${parts.join("")}</div>`;
+        const entries = flattenObject(result);
+        if (!entries.length) return `<div class="ai-result-empty">خروجی معتبری از AI دریافت نشد.</div>`;
+        return `<div class="ai-rec-fallback">${entries.map(([k, v]) => `<div class="ai-rec-row"><span class="ai-rec-label">${escapeHtml(k)}</span><span class="ai-rec-value">${escapeHtml(String(v ?? "-"))}</span></div>`).join("")}</div>`;
     }
 
     function flattenObject(obj, prefix = "") {
@@ -806,6 +1020,193 @@ const App = (() => {
                 </div>
             </div>
         `;
+    }
+
+    function normalizeSuggestionRow(row) {
+        if (!row || typeof row !== "object") return {};
+
+        const id =
+            row.id ??
+            row.suggestion_id ??
+            row.suggestionId ??
+            row.AppointmentSuggestionId ??
+            null;
+
+        const recordNo =
+            row.record_no ??
+            row.recordNo ??
+            row.RecordNo ??
+            row.patient_record_no ??
+            row.patientRecordNo ??
+            null;
+
+        const patientName =
+            row.patient_name ??
+            row.patient_name_canonical ??
+            row.PatientName ??
+            row.patient ??
+            null;
+
+        const serviceName =
+            row.service_name ??
+            row.service ??
+            row.service_title ??
+            null;
+
+        const insuranceName =
+            row.insurance_name ??
+            row.insurance ??
+            row.insurer_name ??
+            null;
+
+        const suggestedSlot =
+            row.suggested_slot ??
+            row.slot ??
+            row.suggested_time ??
+            null;
+
+        const priorityBand =
+            row.priority_band ??
+            row.scheduling_band ??
+            null;
+
+        const priorityScore =
+            row.priority_score ??
+            row.scheduling_priority_score ??
+            null;
+
+        const accepted = row.accepted;
+        const notes = row.notes ?? row.review_notes ?? null;
+
+        let statusText = "Pending";
+        if (accepted === 1 || accepted === true) statusText = "Accepted";
+        else if (accepted === 0 || accepted === false) statusText = "Rejected";
+
+        return {
+            id,
+            recordNo,
+            patientName,
+            serviceName,
+            insuranceName,
+            suggestedSlot,
+            priorityBand,
+            priorityScore,
+            accepted,
+            statusText,
+            notes
+        };
+    }
+
+    function renderAiSuggestionRow(row) {
+        const s = normalizeSuggestionRow(row);
+        const idDisplay = s.id != null ? String(s.id) : "-";
+
+        return `
+            <tr data-suggestion-id="${escapeHtml(idDisplay)}">
+                <td>${escapeHtml(idDisplay)}</td>
+                <td>${escapeHtml(s.recordNo ?? "-")}</td>
+                <td>${escapeHtml(s.patientName ?? "-")}</td>
+                <td>${escapeHtml(s.serviceName ?? "-")}</td>
+                <td>${escapeHtml(s.insuranceName ?? "-")}</td>
+                <td>${escapeHtml(s.suggestedSlot ?? "-")}</td>
+                <td>${escapeHtml(s.priorityBand ?? "-")}</td>
+                <td>${escapeHtml(s.priorityScore != null ? String(s.priorityScore) : "-")}</td>
+                <td>${escapeHtml(s.statusText)}</td>
+                <td>${escapeHtml(s.notes ?? "-")}</td>
+                <td>
+                    <button class="table__action-btn ai-suggestion-accept" data-id="${escapeHtml(idDisplay)}">Accept</button>
+                    <button class="table__action-btn ai-suggestion-reject" data-id="${escapeHtml(idDisplay)}">Reject</button>
+                </td>
+            </tr>
+        `;
+    }
+
+    async function loadAiSuggestions() {
+        const tbody = document.getElementById("aiSuggestionsTbody");
+        if (!tbody) return;
+
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="11">در حال بارگذاری پیشنهادها...</td>
+            </tr>
+        `;
+
+        try {
+            const payload = await API.getAppointmentSuggestions();
+            const rows = Array.isArray(payload?.data)
+                ? payload.data
+                : Array.isArray(payload)
+                    ? payload
+                    : [];
+
+            if (!rows.length) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="11">پیشنهاد فعالی برای بررسی وجود ندارد.</td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = rows.map(renderAiSuggestionRow).join("");
+        } catch (error) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="11">خطا در بارگذاری پیشنهادها: ${escapeHtml(error.message || "خطای نامشخص")}</td>
+                </tr>
+            `;
+        }
+    }
+
+    async function reviewAiSuggestion(id, accepted) {
+        if (!id) return;
+
+        const notes = accepted
+            ? "Accepted from dashboard"
+            : "Rejected from dashboard";
+
+        try {
+            await API.reviewAppointmentSuggestion(id, {
+                accepted,
+                notes
+            });
+
+            showToast(accepted ? "پیشنهاد پذیرفته شد" : "پیشنهاد رد شد");
+            await loadAiSuggestions();
+        } catch (error) {
+            showToast(error.message || "خطا در ثبت بازبینی پیشنهاد");
+        }
+    }
+
+    function handleAiSuggestionsClick(e) {
+        const target = e.target;
+        if (!(target instanceof HTMLElement)) return;
+
+        const id = target.getAttribute("data-id");
+        if (!id) return;
+
+        if (target.classList.contains("ai-suggestion-accept")) {
+            reviewAiSuggestion(id, true);
+        } else if (target.classList.contains("ai-suggestion-reject")) {
+            reviewAiSuggestion(id, false);
+        }
+    }
+
+    function bindAiSuggestionsSection() {
+        const refreshBtn = document.getElementById("aiSuggestionsRefreshBtn");
+        const tbody = document.getElementById("aiSuggestionsTbody");
+
+        if (refreshBtn) {
+            refreshBtn.addEventListener("click", () => {
+                loadAiSuggestions();
+            });
+        }
+
+        if (tbody) {
+            tbody.addEventListener("click", handleAiSuggestionsClick);
+        }
+
+        loadAiSuggestions();
     }
 
     function bindVipButtons() {

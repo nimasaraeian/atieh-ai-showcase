@@ -16,6 +16,7 @@ import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -1042,3 +1043,112 @@ def financial_status():
         return result
     finally:
         conn.close()
+@router.get("/appointment-suggestions")
+def get_appointment_suggestions():
+    """
+    Return latest AI appointment suggestions for operator review.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect("atieh_clinic_working.db")
+    conn.row_factory = sqlite3.Row
+
+    rows = conn.execute("""
+        SELECT
+            id,
+            record_no,
+            patient_name,
+            service_name,
+            insurance_name,
+            preferred_weekday,
+            backlog_note,
+            suggested_slot,
+            priority_band,
+            priority_score,
+            accepted,
+            accepted_at,
+            notes,
+            suggested_at
+        FROM appointment_suggestions
+        ORDER BY id DESC
+        LIMIT 100
+    """).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+class AppointmentSuggestionReviewRequest(BaseModel):
+    accepted: bool
+    notes: str | None = None
+
+
+@router.post("/appointment-suggestions/{suggestion_id}/review")
+def review_appointment_suggestion(suggestion_id: int, payload: AppointmentSuggestionReviewRequest):
+    """
+    Review an AI appointment suggestion and persist operator decision.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect("atieh_clinic_working.db")
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE appointment_suggestions
+        SET
+            accepted = ?,
+            accepted_at = CURRENT_TIMESTAMP,
+            notes = ?
+        WHERE id = ?
+    """, (
+        1 if payload.accepted else 0,
+        payload.notes,
+        suggestion_id
+    ))
+
+    conn.commit()
+
+    updated = cur.execute("""
+        SELECT
+            id,
+            record_no,
+            patient_name,
+            service_name,
+            insurance_name,
+            preferred_weekday,
+            backlog_note,
+            suggested_slot,
+            priority_band,
+            priority_score,
+            accepted,
+            accepted_at,
+            notes,
+            suggested_at
+        FROM appointment_suggestions
+        WHERE id = ?
+    """, (suggestion_id,)).fetchone()
+
+    conn.close()
+
+    if not updated:
+        return {"ok": False, "message": "Suggestion not found"}
+
+    columns = [
+        "id",
+        "record_no",
+        "patient_name",
+        "service_name",
+        "insurance_name",
+        "preferred_weekday",
+        "backlog_note",
+        "suggested_slot",
+        "priority_band",
+        "priority_score",
+        "accepted",
+        "accepted_at",
+        "notes",
+        "suggested_at",
+    ]
+
+    return {"ok": True, "item": dict(zip(columns, updated))}

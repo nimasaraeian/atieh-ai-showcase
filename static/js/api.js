@@ -65,13 +65,34 @@ const API = (() => {
             request(`/financial/patient-lookup?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
 
         getPatientsSearch: (q = "", limit = 50, offset = 0) =>
-            request(`/patients/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
+            request(`/api/staff/patients/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
 
         getServicesCatalog: () => request("/ai/engine/catalog/services"),
         getInsurancesCatalog: () => request("/ai/engine/catalog/insurances"),
 
         recommendSlot: (payload) =>
             request("/ai/engine/recommend-slot", {
+                method: "POST",
+                body: JSON.stringify(payload)
+            }),
+
+        getPatients: (search = "", limit = 20, offset = 0) =>
+            request(`/patients?search=${encodeURIComponent(search)}&limit=${limit}&offset=${offset}`),
+
+        resolveRecordNo: (recordNo) =>
+            request(`/patients/by-record-no/${encodeURIComponent(String(recordNo || "").trim())}`),
+
+        createAppointment: (payload) =>
+            request("/appointments", {
+                method: "POST",
+                body: JSON.stringify(payload)
+            }),
+
+        getAppointmentSuggestions: () =>
+            request("/financial/appointment-suggestions"),
+
+        reviewAppointmentSuggestion: (id, payload) =>
+            request(`/financial/appointment-suggestions/${id}/review`, {
                 method: "POST",
                 body: JSON.stringify(payload)
             })

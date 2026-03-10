@@ -11,15 +11,13 @@ import re
 import sqlite3
 import traceback
 import logging
-import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Any
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Request, Form
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, HTMLResponse
-from starlette.middleware.sessions import SessionMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, text, func
 from pydantic import BaseModel, Field
@@ -41,8 +39,6 @@ from app.api.routes_ai import router as ai_router
 from app.api.ai_financial_recordno import router as ai_fin_router
 from app.api.routes.engine import router as engine_router
 from app.api.financial_operational import router as financial_operational_router
-from app.api.staff.patient_search import router as staff_router
-from app.api.manager.dashboard import router as manager_api_router
 from app.routers import frontend_api
 
 # -----------------------------
@@ -73,13 +69,10 @@ app.include_router(ai_router)
 app.include_router(ai_fin_router)
 app.include_router(engine_router)
 app.include_router(financial_operational_router)
-app.include_router(staff_router)
-app.include_router(manager_api_router)
 app.include_router(frontend_api.router)
 
 # Patient search must be registered before /patients/{patient_id} to match /patients/search
 from app.api.patient_search import search_patients as _search_patients_impl
-from engine.post_import_refresh import PostImportRefreshEngine, RefreshReport
 
 # -----------------------------
 # CORS (permissive for local dev)
@@ -91,88 +84,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# -----------------------------
-# Session Middleware & Auth
-# -----------------------------
-app.add_middleware(
-    SessionMiddleware,
-    secret_key="atieh-ai-secret-key",
-)
-
-USERS = {
-    "admin": {"password": "atieh123", "role": "manager"},
-    "operator": {"password": "clinic123", "role": "operator"},
-}
-
-
-def _render_login_form(error: str | None = None, username: str | None = None) -> str:
-    error_html = (
-        f'<div style="color:#ff6b6b; margin-bottom:12px;">{error}</div>'
-        if error
-        else ""
-    )
-    username_value = username or ""
-    return f"""
-    <!DOCTYPE html>
-    <html lang="fa" dir="rtl">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Atieh AI Login</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    </head>
-    <body style="margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#050816; color:#fff; display:flex; align-items:center; justify-content:center; min-height:100vh;">
-        <div style="background:rgba(15,23,42,0.96); border-radius:16px; padding:32px 28px; width:100%; max-width:360px; box-shadow:0 24px 60px rgba(15,23,42,0.9); border:1px solid rgba(148,163,184,0.25);">
-            <h1 style="margin:0 0 8px; font-size:22px;">ورود به داشبورد آتیه</h1>
-            <p style="margin:0 0 20px; font-size:13px; color:#9ca3af;">لطفاً نام کاربری و رمز عبور خود را وارد کنید.</p>
-            {error_html}
-            <form method="post" action="/login">
-                <div style="margin-bottom:12px;">
-                    <label for="username" style="display:block; margin-bottom:4px; font-size:13px;">نام کاربری</label>
-                    <input id="username" name="username" value="{username_value}" required style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(148,163,184,0.45); background:rgba(15,23,42,0.85); color:#e5e7eb; font-size:13px; box-sizing:border-box; outline:none;" />
-                </div>
-                <div style="margin-bottom:18px;">
-                    <label for="password" style="display:block; margin-bottom:4px; font-size:13px;">رمز عبور</label>
-                    <input id="password" type="password" name="password" required style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(148,163,184,0.45); background:rgba(15,23,42,0.85); color:#e5e7eb; font-size:13px; box-sizing:border-box; outline:none;" />
-                </div>
-                <button type="submit" style="width:100%; padding:10px 12px; border-radius:999px; border:none; background:linear-gradient(135deg,#22c55e,#0ea5e9); color:#0b1120; font-weight:600; font-size:14px; cursor:pointer;">
-                    ورود
-                </button>
-            </form>
-        </div>
-    </body>
-    </html>
-    """
-
-
-@app.get("/login", response_class=HTMLResponse)
-async def login_get(request: Request):
-    """نمایش فرم ورود ساده برای داشبورد."""
-    if request.session.get("user"):
-        return RedirectResponse(url="/", status_code=302)
-    return HTMLResponse(content=_render_login_form())
-
-
-@app.post("/login")
-async def login_post(request: Request, username: str = Form(...), password: str = Form(...)):
-    """اعتبارسنجی ورود و ایجاد سشن."""
-    user = USERS.get(username)
-    if not user or user["password"] != password:
-        html = _render_login_form(
-            error="نام کاربری یا رمز عبور نادرست است.",
-            username=username,
-        )
-        return HTMLResponse(content=html, status_code=401)
-
-    request.session["user"] = {"username": username, "role": user["role"]}
-    return RedirectResponse(url="/", status_code=302)
-
-
-@app.get("/logout")
-async def logout(request: Request):
-    """خروج کاربر و پاک کردن سشن."""
-    request.session.clear()
-    return RedirectResponse(url="/login", status_code=302)
 
 
 # -----------------------------
@@ -227,10 +138,8 @@ if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")
-    async def read_root(request: Request):
-        """صفحه اصلی رابط کاربری (محافظت‌شده با سشن)."""
-        if not request.session.get("user"):
-            return RedirectResponse(url="/login", status_code=302)
+    async def read_root():
+        """صفحه اصلی رابط کاربری"""
         return FileResponse(
             os.path.join(static_dir, "index.html"),
             media_type="text/html"
@@ -239,26 +148,6 @@ if os.path.exists(static_dir):
 public_dir = os.path.join(os.path.dirname(__file__), "public")
 if os.path.exists(public_dir):
     app.mount("/public", StaticFiles(directory=public_dir), name="public")
-
-# Manager dashboard page (standalone HTML)
-_templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-_manager_dashboard_path = os.path.join(_templates_dir, "manager_dashboard.html")
-
-
-@app.get("/manager")
-async def manager_dashboard_page(request: Request):
-    """Manager dashboard – financial insights (login may be required)."""
-    if os.path.exists(_manager_dashboard_path):
-        return FileResponse(_manager_dashboard_path, media_type="text/html")
-    return RedirectResponse(url="/#/manager", status_code=302)
-
-
-@app.get("/staff/search")
-async def staff_search_page(request: Request):
-    """Staff patient search page – serves main SPA on patient search route."""
-    if not request.session.get("user"):
-        return RedirectResponse(url="/login", status_code=302)
-    return RedirectResponse(url="/#/patients", status_code=302)
 
 
 # -----------------------------
@@ -272,12 +161,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # =============================
-# Health Check (used by launcher to detect API readiness)
+# Compat API for tests (v1)
 # =============================
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "Atieh AI"}
+    crm_mode = os.environ.get("CRM_MODE", "mock")
+    try:
+        crm_client = get_crm_client_dependency()
+        crm_healthy = crm_client is not None
+    except Exception:
+        crm_healthy = False
+    return {
+        "status": "ok",
+        "version": app.version,
+        "crm_mode": crm_mode,
+        "crm_healthy": crm_healthy,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _clamp01(x: float) -> float:
@@ -497,31 +398,6 @@ def patients_search(
     return _search_patients_impl(q, limit, offset)
 
 
-@app.get("/patients/by-record-no/{record_no}")
-def resolve_patient_by_record_no(record_no: str):
-    """Resolve record_no to patient_id for booking. Uses patient_recordno_map or record_no_patient_map."""
-    rn = (record_no or "").strip()
-    if not rn:
-        raise HTTPException(status_code=400, detail="record_no required")
-    conn = get_db_conn()
-    try:
-        cur = conn.cursor()
-        for table in ("patient_recordno_map", "record_no_patient_map"):
-            try:
-                cur.execute(
-                    f"SELECT patient_id FROM {table} WHERE record_no = ? AND patient_id IS NOT NULL LIMIT 1",
-                    (rn,),
-                )
-                row = cur.fetchone()
-                if row:
-                    return {"patient_id": row[0], "record_no": rn}
-            except sqlite3.OperationalError:
-                pass
-        raise HTTPException(status_code=404, detail=f"record_no not found: {rn}")
-    finally:
-        conn.close()
-
-
 @app.get("/patients")
 def list_patients(
     search: str | None = Query(default=None, description="Search in name/phone/national_id"),
@@ -600,176 +476,6 @@ def debug_db():
     sample = cur.execute("SELECT id,name,phone FROM patients ORDER BY id DESC LIMIT 5").fetchall()
     conn.close()
     return {"db_path": p, "patients_count": count, "sample": sample}
-
-
-@app.get("/backup-db")
-async def backup_db():
-    """
-    دستی گرفتن نسخه پشتیبان از پایگاه داده کاری atieh_clinic_working.db
-    و ذخیره آن در پوشه backups با نام timestamp شده.
-    """
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    db_name = "atieh_clinic_working.db"
-    db_path = os.path.join(project_root, db_name)
-
-    if not os.path.exists(db_path):
-        return {"ok": False, "error": "database file not found"}
-
-    backups_dir = os.path.join(project_root, "backups")
-    os.makedirs(backups_dir, exist_ok=True)
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"atieh_clinic_working_{ts}.db"
-    backup_path = os.path.join(backups_dir, backup_filename)
-
-    shutil.copy2(db_path, backup_path)
-
-    return {
-        "ok": True,
-        "backup_file": f"backups/{backup_filename}",
-    }
-
-
-# =============================
-# Import Center v1
-# =============================
-
-IMPORT_INCOMING = r"C:\AtiehAI\incoming"
-IMPORT_PROCESSED = r"C:\AtiehAI\processed"
-IMPORT_FAILED = r"C:\AtiehAI\failed"
-IMPORT_EXTENSIONS = (".csv", ".xlsx", ".xls")
-IMPORT_DB_NAME = "atieh_clinic_working.db"
-
-
-def _get_import_db_conn():
-    """Return SQLite connection to atieh_clinic_working.db for import_runs_v1."""
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(project_root, IMPORT_DB_NAME)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _scan_incoming_files():
-    """Scan C:\\AtiehAI\\incoming for supported files (.csv, .xlsx, .xls)."""
-    if not os.path.exists(IMPORT_INCOMING):
-        return []
-    files = []
-    for name in os.listdir(IMPORT_INCOMING):
-        path = os.path.join(IMPORT_INCOMING, name)
-        if os.path.isfile(path) and any(name.lower().endswith(ext) for ext in IMPORT_EXTENSIONS):
-            files.append((name, path))
-    return files
-
-
-@app.post("/imports/run")
-async def imports_run():
-    """Import Center v1: scan incoming, create import_runs_v1 records, move files to processed or failed."""
-    files = _scan_incoming_files()
-    if not files:
-        return {"ok": True, "message": "no files found", "processed_count": 0, "refresh": None}
-
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(project_root, IMPORT_DB_NAME)
-    if not os.path.exists(db_path):
-        return {"ok": False, "error": "database file not found", "processed_count": 0, "refresh": None}
-
-    os.makedirs(IMPORT_PROCESSED, exist_ok=True)
-    os.makedirs(IMPORT_FAILED, exist_ok=True)
-
-    processed_count = 0
-    conn = _get_import_db_conn()
-    cur = conn.cursor()
-
-    for file_name, file_path in files:
-        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-        started_at = datetime.now().isoformat()
-        run_id = None
-
-        try:
-            cur.execute(
-                """
-                INSERT INTO import_runs_v1 (file_name, file_path, file_size, status, rows_loaded, started_at, finished_at, notes)
-                VALUES (?, ?, ?, 'PENDING', 0, ?, NULL, 'v1 intake started')
-                """,
-                (file_name, file_path, file_size, started_at),
-            )
-            run_id = cur.lastrowid
-            conn.commit()
-
-            shutil.move(file_path, os.path.join(IMPORT_PROCESSED, file_name))
-            finished_at = datetime.now().isoformat()
-            cur.execute(
-                """
-                UPDATE import_runs_v1 SET status = 'SUCCESS', finished_at = ?, rows_loaded = 0, notes = 'v1 intake completed'
-                WHERE id = ?
-                """,
-                (finished_at, run_id),
-            )
-            conn.commit()
-            processed_count += 1
-        except Exception as e:
-            finished_at = datetime.now().isoformat()
-            notes = str(e)
-            if run_id is not None:
-                cur.execute(
-                    "UPDATE import_runs_v1 SET status = 'FAILED', finished_at = ?, notes = ? WHERE id = ?",
-                    (finished_at, notes, run_id),
-                )
-                conn.commit()
-            try:
-                if os.path.exists(file_path):
-                    shutil.move(file_path, os.path.join(IMPORT_FAILED, file_name))
-            except Exception:
-                pass
-
-    conn.close()
-
-    refresh_report = None
-    if processed_count > 0:
-        try:
-            refresh_engine = PostImportRefreshEngine(db_path=db_path)
-            refresh_report = refresh_engine.run()
-        except Exception as e:
-            logger.exception("Post-import refresh failed: %s", e)
-            refresh_report = RefreshReport(
-                ok=False,
-                total_duration_ms=0,
-                steps=[],
-                message=str(e),
-            )
-
-    return {
-        "ok": True,
-        "processed_count": processed_count,
-        "refresh": {
-            "ok": refresh_report.ok,
-            "total_duration_ms": refresh_report.total_duration_ms,
-            "steps": refresh_report.steps,
-            "message": refresh_report.message,
-        } if refresh_report else None,
-    }
-
-
-@app.get("/imports/history")
-def imports_history():
-    """Return latest 50 rows from import_runs_v1, ordered by id desc."""
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(project_root, IMPORT_DB_NAME)
-    if not os.path.exists(db_path):
-        return {"ok": False, "error": "database file not found", "data": []}
-
-    conn = _get_import_db_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, file_name, file_path, file_size, status, rows_loaded, started_at, finished_at, notes FROM import_runs_v1 ORDER BY id DESC LIMIT 50"
-        )
-        rows = cur.fetchall()
-        data = [dict(r) for r in rows]
-        return {"ok": True, "data": data}
-    finally:
-        conn.close()
 
 
 # =============================
@@ -895,66 +601,6 @@ class AppointmentOutcomeRequest(BaseModel):
     payment_delay_days: Optional[int] = None
     final_amount_paid: Optional[float] = None
     cancellation_reason: Optional[str] = None
-
-
-@app.post("/appointments", response_model=AppointmentResponse)
-def create_appointment(payload: AppointmentCreate, db: Session = Depends(get_db)):
-    """Create a new appointment. Requires appointment_date."""
-    if payload.appointment_date is None:
-        raise HTTPException(status_code=400, detail="appointment_date is required")
-
-    patient = db.query(Patient).filter(Patient.id == payload.patient_id).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="patient not found")
-
-    payment_type = payload.payment_type
-    if not payment_type:
-        pt = patient.payment_type
-        payment_type = pt.value if pt else "cash"
-
-    dup = (
-        db.query(Appointment)
-        .filter(
-            Appointment.patient_id == payload.patient_id,
-            Appointment.appointment_date == payload.appointment_date,
-            Appointment.treatment_type == payload.treatment_type,
-            Appointment.status != "cancelled",
-        )
-        .first()
-    )
-    if dup:
-        raise HTTPException(status_code=409, detail="duplicate appointment for same patient, date, and treatment")
-
-    appt = Appointment(
-        patient_id=payload.patient_id,
-        appointment_date=payload.appointment_date,
-        payment_type=payment_type,
-        treatment_type=payload.treatment_type,
-        duration_minutes=30,
-        priority_score=0.5,
-        status="pending",
-        ai_priority_score=None,
-        notes=payload.notes,
-    )
-    db.add(appt)
-    db.commit()
-    db.refresh(appt)
-
-    patient_name = patient.name or ""
-    return AppointmentResponse(
-        id=appt.id,
-        patient_id=appt.patient_id,
-        patient_name=patient_name,
-        appointment_date=appt.appointment_date,
-        payment_type=payment_type,
-        payment_category=None,
-        treatment_type=payload.treatment_type,
-        treatment_category=None,
-        priority_score=appt.priority_score,
-        lifetime_category=None,
-        status=appt.status,
-        notes=appt.notes,
-    )
 
 
 # -----------------------------

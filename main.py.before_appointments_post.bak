@@ -497,31 +497,6 @@ def patients_search(
     return _search_patients_impl(q, limit, offset)
 
 
-@app.get("/patients/by-record-no/{record_no}")
-def resolve_patient_by_record_no(record_no: str):
-    """Resolve record_no to patient_id for booking. Uses patient_recordno_map or record_no_patient_map."""
-    rn = (record_no or "").strip()
-    if not rn:
-        raise HTTPException(status_code=400, detail="record_no required")
-    conn = get_db_conn()
-    try:
-        cur = conn.cursor()
-        for table in ("patient_recordno_map", "record_no_patient_map"):
-            try:
-                cur.execute(
-                    f"SELECT patient_id FROM {table} WHERE record_no = ? AND patient_id IS NOT NULL LIMIT 1",
-                    (rn,),
-                )
-                row = cur.fetchone()
-                if row:
-                    return {"patient_id": row[0], "record_no": rn}
-            except sqlite3.OperationalError:
-                pass
-        raise HTTPException(status_code=404, detail=f"record_no not found: {rn}")
-    finally:
-        conn.close()
-
-
 @app.get("/patients")
 def list_patients(
     search: str | None = Query(default=None, description="Search in name/phone/national_id"),
@@ -895,66 +870,6 @@ class AppointmentOutcomeRequest(BaseModel):
     payment_delay_days: Optional[int] = None
     final_amount_paid: Optional[float] = None
     cancellation_reason: Optional[str] = None
-
-
-@app.post("/appointments", response_model=AppointmentResponse)
-def create_appointment(payload: AppointmentCreate, db: Session = Depends(get_db)):
-    """Create a new appointment. Requires appointment_date."""
-    if payload.appointment_date is None:
-        raise HTTPException(status_code=400, detail="appointment_date is required")
-
-    patient = db.query(Patient).filter(Patient.id == payload.patient_id).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="patient not found")
-
-    payment_type = payload.payment_type
-    if not payment_type:
-        pt = patient.payment_type
-        payment_type = pt.value if pt else "cash"
-
-    dup = (
-        db.query(Appointment)
-        .filter(
-            Appointment.patient_id == payload.patient_id,
-            Appointment.appointment_date == payload.appointment_date,
-            Appointment.treatment_type == payload.treatment_type,
-            Appointment.status != "cancelled",
-        )
-        .first()
-    )
-    if dup:
-        raise HTTPException(status_code=409, detail="duplicate appointment for same patient, date, and treatment")
-
-    appt = Appointment(
-        patient_id=payload.patient_id,
-        appointment_date=payload.appointment_date,
-        payment_type=payment_type,
-        treatment_type=payload.treatment_type,
-        duration_minutes=30,
-        priority_score=0.5,
-        status="pending",
-        ai_priority_score=None,
-        notes=payload.notes,
-    )
-    db.add(appt)
-    db.commit()
-    db.refresh(appt)
-
-    patient_name = patient.name or ""
-    return AppointmentResponse(
-        id=appt.id,
-        patient_id=appt.patient_id,
-        patient_name=patient_name,
-        appointment_date=appt.appointment_date,
-        payment_type=payment_type,
-        payment_category=None,
-        treatment_type=payload.treatment_type,
-        treatment_category=None,
-        priority_score=appt.priority_score,
-        lifetime_category=None,
-        status=appt.status,
-        notes=appt.notes,
-    )
 
 
 # -----------------------------

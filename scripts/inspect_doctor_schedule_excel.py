@@ -1,0 +1,20 @@
+from pathlib import Path
+import pandas as pd
+
+excel_path = Path(r"C:\Users\USER\Documents\GitHub\atieh\data\inputs\reference\doctor_schedule.xlsx")
+if not excel_path.exists():
+    raise FileNotFoundError(f"Excel file not found: {excel_path}")
+
+xls = pd.ExcelFile(excel_path)
+
+print("Sheets in Excel file:")
+for sheet in xls.sheet_names:
+    print("-", sheet)
+
+print("\n" + "=" * 80)
+
+for sheet in xls.sheet_names:
+    print(f"\n### SHEET: {sheet}")
+    df = pd.read_excel(excel_path, sheet_name=sheet, header=None)
+    print(df.head(20).to_string(index=False, header=False))
+    print("-" * 80)
