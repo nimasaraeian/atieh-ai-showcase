@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-slate-950 text-slate-100 antialiased;
+  }
+  [dir='rtl'] {
+    font-family: 'Vazirmatn', 'Tahoma', 'Arial', sans-serif;
+  }
+}
+
+.metric-value {
+  font-weight: 700;
+  font-size: 1.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

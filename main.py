@@ -43,6 +43,7 @@ from app.api.routes.engine import router as engine_router
 from app.api.financial_operational import router as financial_operational_router
 from app.api.staff.patient_search import router as staff_router
 from app.api.manager.dashboard import router as manager_api_router
+from app.api.manager_dashboard import router as manager_dashboard_router
 from app.routers import frontend_api
 
 # -----------------------------
@@ -75,6 +76,7 @@ app.include_router(engine_router)
 app.include_router(financial_operational_router)
 app.include_router(staff_router)
 app.include_router(manager_api_router)
+app.include_router(manager_dashboard_router)
 app.include_router(frontend_api.router)
 
 # Patient search must be registered before /patients/{patient_id} to match /patients/search
@@ -239,6 +241,17 @@ if os.path.exists(static_dir):
 public_dir = os.path.join(os.path.dirname(__file__), "public")
 if os.path.exists(public_dir):
     app.mount("/public", StaticFiles(directory=public_dir), name="public")
+
+# New React UI (Atieh AI panels: receptionist, doctor, manager)
+_react_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.exists(_react_dist):
+    app.mount("/app/assets", StaticFiles(directory=os.path.join(_react_dist, "assets")), name="react_assets")
+
+    @app.get("/app")
+    @app.get("/app/{full_path:path}")
+    async def react_app(full_path: str = ""):
+        """Serve React SPA - index.html for all /app routes (client-side routing)."""
+        return FileResponse(os.path.join(_react_dist, "index.html"), media_type="text/html")
 
 # Manager dashboard page (standalone HTML)
 _templates_dir = os.path.join(os.path.dirname(__file__), "templates")
@@ -987,6 +1000,9 @@ async def api_root():
         "version": "1.0.0",
         "docs": "/docs"
     }
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
 
 
 # -----------------------------

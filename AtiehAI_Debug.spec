@@ -1,16 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_data_files
 
 a = Analysis(
-    ['launcher.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('tkinter') + [
-        ('atieh_clinic.db', '.'),
-        ('atieh_clinic_working.db', '.'),
-    ],
-    hiddenimports=['tkinter'],
+    datas=[('static', 'static'), ('data', 'data'), ('atieh_clinic.db', '.')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -25,12 +21,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='desktop_app',
+    name='AtiehAI_Debug',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -44,5 +40,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='desktop_app',
+    name='AtiehAI_Debug',
 )

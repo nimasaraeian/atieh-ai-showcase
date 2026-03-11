@@ -4,6 +4,10 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 
+import pandas as pd
+
+from app.engine.scoring import calculate_financial_score
+
 DB = Path(r".\atieh_clinic.db")
 
 FA_SATURDAY = "\u0634\u0646\u0628\u0647"
@@ -64,6 +68,34 @@ def _end_time_30m(slot_start: str) -> str:
     return (dt + timedelta(minutes=30)).strftime("%H:%M")
 
 
+def _load_insurance_priority_df() -> pd.DataFrame:
+    """
+    Load insurance priority catalog, if available.
+
+    We intentionally mirror the search order used elsewhere in the app so that
+    the same CSV that drives dashboards is also used for slot scoring.
+    """
+    candidate_paths = [
+        "data/outputs/insurance_priority.csv",
+        "data/inputs/payments/insurance_payment_priority.csv",
+        "data/inputs/payments/insurance_priority.csv",
+        "data/reference/insurance_payment_priority.csv",
+        "data/inputs/reference/insurance_payment_priority.csv",
+    ]
+
+    for p in candidate_paths:
+        path = Path(p)
+        if path.exists():
+            try:
+                return pd.read_csv(path, encoding="utf-8-sig")
+            except Exception:
+                # Any issue loading the CSV should not break scheduling;
+                # we'll fall back to neutral financial scores.
+                return pd.DataFrame()
+
+    return pd.DataFrame()
+
+
 def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
     if not DB.exists():
         return {
@@ -75,6 +107,8 @@ def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
 
     preferred_day_en = payload.get("preferred_day")
     preferred_day_fa = _normalize_day(preferred_day_en)
+
+    insurance_name = payload.get("insurance") or None
 
     conn = sqlite3.connect(str(DB))
     conn.row_factory = sqlite3.Row
@@ -113,6 +147,10 @@ def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
     rows = cur.execute(sql, params).fetchall()
     conn.close()
 
+    # Load insurance priority table once per request so we can factor insurer
+    # value into the final score for each slot.
+    insurance_priority_df = _load_insurance_priority_df()
+
     recommendations = []
 
     for row in rows:
@@ -126,17 +164,37 @@ def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
         if hh < 8 or hh > 20:
             continue
 
-        recommendations.append({
-            "slot_id": row["slot_id"],
-            "doctor_id": row["doctor_id"],
-            "doctor_name": row["doctor_name"],
-            "weekday": row["weekday_name"],
-            "shift": row["shift_label"],
-            "time": start_time,
-            "floor": row["floor_label"],
-            "unit": row["unit_label"],
-            "score": _calc_time_score(start_time),
-        })
+        time_score = _calc_time_score(start_time)
+        financial_score = calculate_financial_score(
+            insurance_name=insurance_name,
+            insurance_priority_df=insurance_priority_df,
+            default=0.5,
+        )
+
+        # Combine time- and insurance-value components into a single score.
+        # We keep time slightly dominant so earlier clinic slots are still
+        # preferred, but higher-value insurers get a meaningful boost.
+        combined_score = 0.6 * time_score + 0.4 * financial_score
+
+        recommendations.append(
+            {
+                "slot_id": row["slot_id"],
+                "doctor_id": row["doctor_id"],
+                "doctor_name": row["doctor_name"],
+                "weekday": row["weekday_name"],
+                "shift": row["shift_label"],
+                "time": start_time,
+                "floor": row["floor_label"],
+                "unit": row["unit_label"],
+                "score": round(combined_score, 3),
+                "time_score": time_score,
+                "financial_score": round(financial_score, 3),
+            }
+        )
+
+    # Sort by combined score (descending) so that the highest-value
+    # recommendations – considering both time and insurance value – appear first.
+    recommendations.sort(key=lambda r: r.get("score", 0.0), reverse=True)
 
     return {
         "ok": True,

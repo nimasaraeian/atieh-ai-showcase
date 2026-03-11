@@ -190,6 +190,8 @@ def _bootstrap_existing(
         "004_payments_staging.sql":       ("table",  "stg_payments"),
         # 005: check that at least one of the two new indexes already exists
         "005_perf_indexes.sql":           ("index",  "idx_appointments_date"),
+        "016_service_dim.sql":            ("table",  "service_dim"),
+        "017_doctor_dim.sql":             ("table",  "doctor_dim"),
     }
 
     for mf in migration_files:

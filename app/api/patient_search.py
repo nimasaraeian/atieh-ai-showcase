@@ -34,6 +34,31 @@ def _get_conn():
     return conn
 
 
+def _normalize_persian_text(s: str) -> str:
+    """
+    Normalize Persian/Arabic text for more robust search.
+
+    - Trim leading/trailing whitespace
+    - Replace Arabic ي / ك with Persian ی / ک
+    - Replace half‑space (ZWNJ) with normal space
+    - Collapse multiple spaces into a single space
+    """
+    if not s:
+        return ""
+
+    # Normalize common Arabic codepoints to Persian forms
+    s = (
+        s.replace("\u064a", "ی")  # ARABIC LETTER YEH -> PERSIAN YEH
+        .replace("\u0643", "ک")  # ARABIC LETTER KAF -> PERSIAN KEHEH
+        .replace("\u200c", " ")  # ZERO WIDTH NON-JOINER (half-space) -> normal space
+    )
+
+    # Normalize whitespace
+    s = s.strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
 def _extract_digits(s: str) -> str:
     """Extract digits from string (ASCII + Persian) for numeric search."""
     fa_to_en = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
@@ -47,13 +72,17 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
     Returns: { count, data: [ { record_no, patient_name, mobile, financial_tier,
               lifetime_net_received, last_payment_date_raw, in_top300, in_followup_queue } ] }
     """
-    q = (q or "").strip()
-    if not q:
+    raw_q = (q or "")
+    # Persian-friendly normalization for order-insensitive name search
+    q_norm = _normalize_persian_text(raw_q)
+
+    if not q_norm:
         return {"count": 0, "data": []}
 
-    # Tokenize the query for order-insensitive name search (e.g. "رضایی علیرضا" vs "علیرضا رضایی")
+    # Tokenize the normalized query for order-insensitive name search
+    # Example: "رضایی علیرضا" vs "علیرضا رضایی"
     # Filter tokens with length >= 2 to avoid single-char noise (e.g. "ا" matching too broadly)
-    raw_tokens: List[str] = [t.strip() for t in re.split(r"\s+", q) if t and t.strip()]
+    raw_tokens: List[str] = [t.strip() for t in q_norm.split(" ") if t and t.strip()]
     name_tokens: List[str] = [t for t in raw_tokens if len(t) >= 2]
 
     conn = _get_conn()
@@ -64,8 +93,8 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
         seen_patient_key: set = set()
 
         # 1) Search v_financial_identity_profile (main source - 128K identities with financial data)
-        like = f"%{q}%"
-        q_digits = _extract_digits(q)
+        like = f"%{q_norm}%"
+        q_digits = _extract_digits(q_norm)
         mobile_like = f"%{q_digits[-10:] if len(q_digits) >= 7 else q_digits}%" if len(q_digits) >= 5 else "%"
 
         try:
@@ -88,8 +117,10 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
                 for token in name_tokens:
                     token_clauses.append("patient_name_canonical LIKE ?")
                     params.append(f"%{token}%")
+                # All tokens must be present somewhere in the normalized name (order-insensitive)
                 where_parts.append("(" + " AND ".join(token_clauses) + ")")
             else:
+                # Fallback: simple substring match on normalized name
                 where_parts.append("patient_name_canonical LIKE ?")
                 params.append(like)
 
@@ -117,7 +148,15 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
                     COALESCE(lifetime_net_received, 0) DESC
                 LIMIT ? OFFSET ?
             """
-            params.extend([q.strip(), f"{q.strip()}%", f"{q.strip()}%", limit * 2, offset])
+            params.extend(
+                [
+                    q_norm,
+                    f"{q_norm}%",
+                    f"{q_norm}%",
+                    limit * 2,
+                    offset,
+                ]
+            )
 
             cur.execute(sql, params)
             for r in cur.fetchall():
@@ -130,14 +169,14 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
             logger.warning("v_financial_identity_profile search: %s", e)
 
         # 2) Fallback: patients + patient_recordno_map (patients not in financial profile)
-        if len(rows) < limit and q.strip():
+        if len(rows) < limit and q_norm:
             try:
                 # Build an order-insensitive token-based name search for patients.name
                 name_where_clauses: List[str] = []
                 name_params: List[Any] = []
 
                 if name_tokens:
-                    # Require all tokens to be present in the name (AND of LIKEs)
+                    # Require all tokens to be present in the (non-canonical) name (AND of LIKEs)
                     name_where_clauses.append(
                         "(" + " AND ".join(["p.name LIKE ?"] * len(name_tokens)) + ")"
                     )
