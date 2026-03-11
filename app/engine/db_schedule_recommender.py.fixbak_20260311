@@ -7,12 +7,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from app.engine.scoring import calculate_financial_score
-from app.utils.insurance_normalize import normalize_insurance_for_lookup
 
 DB = Path(r".\atieh_clinic.db")
-
-# CASH always has highest priority (payment_priority = 100 → financial_score = 1.0)
-CASH_LABELS = {"cash", "نقد", "نقدی", "nakid", "cash"}
 
 FA_SATURDAY = "\u0634\u0646\u0628\u0647"
 FA_SUNDAY = "\u06cc\u06a9\u0634\u0646\u0628\u0647"
@@ -28,39 +24,6 @@ SHIFT_CODE_MAP = {
     "afternoon": "E",
     "night": "N",
 }
-
-# Persian weekday -> Python weekday (Monday=0, Sunday=6) for next-occurrence date calc
-FA_WEEKDAY_TO_PY = {
-    FA_MONDAY: 0,
-    FA_TUESDAY: 1,
-    FA_WEDNESDAY: 2,
-    FA_THURSDAY: 3,
-    FA_FRIDAY: 4,
-    FA_SATURDAY: 5,
-    FA_SUNDAY: 6,
-    FA_TUESDAY_ZWNJ: 1,
-}
-
-# Persian weekday -> English for i18n
-FA_WEEKDAY_TO_EN = {
-    FA_SATURDAY: "Saturday",
-    FA_SUNDAY: "Sunday",
-    FA_MONDAY: "Monday",
-    FA_TUESDAY: "Tuesday",
-    FA_TUESDAY_ZWNJ: "Tuesday",
-    FA_WEDNESDAY: "Wednesday",
-    FA_THURSDAY: "Thursday",
-    FA_FRIDAY: "Friday",
-}
-
-
-def _next_occurrence_date(weekday_py: int) -> str:
-    """Return YYYY-MM-DD for the next occurrence of the given weekday (0=Mon, 6=Sun)."""
-    today = datetime.now().date()
-    today_weekday = today.weekday()
-    days_ahead = (weekday_py - today_weekday + 7) % 7
-    target = today + timedelta(days=days_ahead)
-    return target.strftime("%Y-%m-%d")
 
 
 def _normalize_day(day_value):
@@ -107,45 +70,11 @@ def _end_time_30m(slot_start: str) -> str:
 
 def _load_insurance_priority_df() -> pd.DataFrame:
     """
-    Load insurance priority catalog for slot scoring.
+    Load insurance priority catalog, if available.
 
-    Priority:
-      1) SQLite insurance_priority_rank (from Excel تاریخ پرداختی بیمه ها.xlsx)
-      2) CSV fallbacks
-
-    Returns DataFrame with insurance_name, priority_score (0–1).
-    CASH is always added with priority_score=1.0.
+    We intentionally mirror the search order used elsewhere in the app so that
+    the same CSV that drives dashboards is also used for slot scoring.
     """
-    import os
-
-    db_path = os.getenv("DATABASE_URL", "sqlite:///atieh_clinic.db")
-    if db_path.startswith("sqlite:///"):
-        db_path = db_path[len("sqlite:///"):]
-    db = Path(db_path)
-
-    if db.exists():
-        try:
-            conn = sqlite3.connect(str(db))
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='insurance_priority_rank'"
-            )
-            if cur.fetchone():
-                rows = cur.execute(
-                    "SELECT insurance_name, priority_score FROM insurance_priority_rank"
-                ).fetchall()
-                conn.close()
-                # priority_score in DB is 0–100; convert to 0–1
-                data = [
-                    {"insurance_name": r[0], "priority_score": (r[1] or 25) / 100.0}
-                    for r in rows
-                ]
-                data.append({"insurance_name": "CASH", "priority_score": 1.0})
-                return pd.DataFrame(data)
-            conn.close()
-        except Exception:
-            pass
-
     candidate_paths = [
         "data/outputs/insurance_priority.csv",
         "data/inputs/payments/insurance_payment_priority.csv",
@@ -153,60 +82,21 @@ def _load_insurance_priority_df() -> pd.DataFrame:
         "data/reference/insurance_payment_priority.csv",
         "data/inputs/reference/insurance_payment_priority.csv",
     ]
+
     for p in candidate_paths:
         path = Path(p)
         if path.exists():
             try:
-                df = pd.read_csv(path, encoding="utf-8-sig")
-                # Normalize scores to 0–1 if stored as 0–100
-                if "priority_score" in df.columns and df["priority_score"].max() > 1.5:
-                    df = df.copy()
-                    df["priority_score"] = df["priority_score"] / 100.0
-                return df
+                return pd.read_csv(path, encoding="utf-8-sig")
             except Exception:
-                pass
+                # Any issue loading the CSV should not break scheduling;
+                # we'll fall back to neutral financial scores.
+                return pd.DataFrame()
 
     return pd.DataFrame()
 
 
-def _is_cash(insurance_name: str) -> bool:
-    if not insurance_name:
-        return False
-    s = str(insurance_name).strip().upper()
-    if s == "CASH":
-        return True
-    try:
-        from app.utils.fa_normalize import normalize_fa
-        n = normalize_fa(insurance_name)
-        return n in ("نقد", "نقدی", "nakid", "cash")
-    except Exception:
-        return False
-
-
-def _get_financial_score(
-    insurance_name: str | None,
-    insurance_priority_df: pd.DataFrame,
-    default: float = 0.5,
-) -> float:
-    """
-    Payment priority for slot scoring.
-    CASH → 1.0; else lookup in insurance_priority_rank using normalized name.
-    """
-    if not insurance_name or not str(insurance_name).strip():
-        return default
-    raw = str(insurance_name).strip()
-    if _is_cash(raw):
-        return 1.0
-    lookup = normalize_insurance_for_lookup(raw) or raw
-    return calculate_financial_score(
-        lookup,
-        insurance_priority_df,
-        default,
-    )
-
-
 def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
-    """DEPRECATED: Overridden by patient-aware version below. Kept for reference only."""
     if not DB.exists():
         return {
             "ok": False,
@@ -275,39 +165,35 @@ def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
             continue
 
         time_score = _calc_time_score(start_time)
-        financial_score = _get_financial_score(
-            insurance_name,
-            insurance_priority_df,
-            0.5,
+        financial_score = calculate_financial_score(
+            insurance_name=insurance_name,
+            insurance_priority_df=insurance_priority_df,
+            default=0.5,
         )
 
         # Combine time- and insurance-value components into a single score.
+        # We keep time slightly dominant so earlier clinic slots are still
+        # preferred, but higher-value insurers get a meaningful boost.
         combined_score = 0.6 * time_score + 0.4 * financial_score
 
-        weekday_fa = str(row["weekday_name"] or "").strip()
-        weekday_py = FA_WEEKDAY_TO_PY.get(weekday_fa)
-        slot_date = _next_occurrence_date(weekday_py) if weekday_py is not None else None
-        weekday_en = FA_WEEKDAY_TO_EN.get(weekday_fa) if weekday_fa else None
-
-        rec = {
-            "slot_id": row["slot_id"],
-            "doctor_id": row["doctor_id"],
-            "doctor_name": row["doctor_name"],
-            "weekday": weekday_fa or row["weekday_name"],
-            "weekday_en": weekday_en,
-            "date": slot_date,
-            "shift": row["shift_label"],
-            "time": start_time,
-            "floor": row["floor_label"],
-            "unit": row["unit_label"],
-            "score": round(combined_score, 3),
-            "time_score": time_score,
-            "financial_score": round(financial_score, 3),
-        }
-        recommendations.append(rec)
+        recommendations.append(
+            {
+                "slot_id": row["slot_id"],
+                "doctor_id": row["doctor_id"],
+                "doctor_name": row["doctor_name"],
+                "weekday": row["weekday_name"],
+                "shift": row["shift_label"],
+                "time": start_time,
+                "floor": row["floor_label"],
+                "unit": row["unit_label"],
+                "score": round(combined_score, 3),
+                "time_score": time_score,
+                "financial_score": round(financial_score, 3),
+            }
+        )
 
     # Sort by combined score (descending) so that the highest-value
-    # recommendations â€“ considering both time and insurance value â€“ appear first.
+    # recommendations – considering both time and insurance value – appear first.
     recommendations.sort(key=lambda r: r.get("score", 0.0), reverse=True)
 
     return {
@@ -323,17 +209,6 @@ def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
 # =========================
 
 from pathlib import Path as _Path
-
-
-def _resolve_slots_db() -> _Path:
-    p = _Path(r".\atieh_clinic.db")
-    return p
-
-def _resolve_financial_db() -> _Path:
-    for p in (_Path(r".\atieh_clinic_working.db"), _Path(r".\atieh_clinic.db")):
-        if p.exists():
-            return p
-    return _Path(r".\atieh_clinic_working.db")
 import sqlite3 as _sqlite3
 
 def _resolve_recommend_db() -> _Path:
@@ -396,11 +271,11 @@ def _load_patient_context(record_no: str) -> dict:
     if not rn:
         return ctx
 
-    slots_db = _resolve_slots_db()
-    if not slots_db.exists():
+    db_path = _resolve_recommend_db()
+    if not db_path.exists():
         return ctx
 
-    conn = _sqlite3.connect(str(slots_db))
+    conn = _sqlite3.connect(str(db_path))
     conn.row_factory = _sqlite3.Row
     cur = conn.cursor()
 
@@ -473,19 +348,15 @@ def _load_patient_context(record_no: str) -> dict:
     return ctx
 
 
-TOP_N_RECOMMENDATIONS = 3
+def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
+    db_path = _resolve_recommend_db()
 
-
-def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
-    """Single active implementation. Uses real doctor_time_slots, patient context. Output capped at top 3."""
-    slots_db = _resolve_slots_db()
-
-    if not slots_db.exists():
+    if not db_path.exists():
         return {
             "ok": False,
             "source": "doctor_time_slots",
             "recommendations": [],
-            "message": f"Slots database not found: {slots_db}",
+            "message": f"Database not found: {db_path}",
         }
 
     preferred_day_en = payload.get("preferred_day") or payload.get("weekday")
@@ -495,7 +366,7 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
     record_no = str(payload.get("record_no") or "").strip() or None
     patient_ctx = _load_patient_context(record_no)
 
-    conn = sqlite3.connect(str(slots_db))
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -548,10 +419,10 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
             continue
 
         time_score = _calc_time_score(start_time)
-        financial_score = _get_financial_score(
-            insurance_name,
-            insurance_priority_df,
-            0.5,
+        financial_score = calculate_financial_score(
+            insurance_name=insurance_name,
+            insurance_priority_df=insurance_priority_df,
+            default=0.5,
         )
 
         patient_priority_score = patient_ctx["patient_priority_score"]
@@ -561,14 +432,14 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         tier_boost = patient_ctx["tier_boost"]
 
         final_score = (
-    0.55 * time_score +
-    0.15 * financial_score +
-    0.12 * patient_priority_score +
-    0.08 * patient_value_score +
-    0.04 * (1.0 if patient_ctx["in_followup_queue"] else 0.0) +
-    0.04 * (1.0 if patient_ctx["in_scheduling_top300"] else 0.0) +
-    0.02 * (1.0 if patient_ctx["financial_tier"] == "VIP" else 0.5 if patient_ctx["financial_tier"] == "HIGH" else 0.2 if patient_ctx["financial_tier"] == "MEDIUM" else 0.0)
-)
+            0.45 * time_score +
+            0.15 * financial_score +
+            0.20 * patient_priority_score +
+            0.10 * patient_value_score +
+            followup_boost +
+            top300_boost +
+            tier_boost
+        )
         final_score = round(_clamp01(final_score), 3)
 
         reasons = []
@@ -585,19 +456,12 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         if financial_score >= 0.7:
             reasons.append("INSURANCE_PRIORITY")
 
-        weekday_fa = str(row["weekday_name"] or "").strip()
-        weekday_py = FA_WEEKDAY_TO_PY.get(weekday_fa)
-        slot_date = _next_occurrence_date(weekday_py) if weekday_py is not None else None
-        weekday_en = FA_WEEKDAY_TO_EN.get(weekday_fa) if weekday_fa else None
-
         recommendations.append(
             {
                 "slot_id": row["slot_id"],
                 "doctor_id": row["doctor_id"],
                 "doctor_name": row["doctor_name"],
-                "weekday": weekday_fa or row["weekday_name"],
-                "weekday_en": weekday_en,
-                "date": slot_date,
+                "weekday": row["weekday_name"],
                 "shift": row["shift_label"],
                 "time": start_time,
                 "floor": row["floor_label"],
@@ -615,18 +479,12 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
             }
         )
 
-    recommendations = sorted(
-        recommendations,
-        key=lambda x: x.get("final_score", x.get("score", 0)),
-        reverse=True,
-    )
-    recommendations = recommendations[:TOP_N_RECOMMENDATIONS]
-    count = len(recommendations)
+    recommendations.sort(key=lambda r: r.get("final_score", 0.0), reverse=True)
 
     return {
         "ok": True,
         "source": "doctor_time_slots",
-        "count": count,
+        "count": len(recommendations),
         "preferred_day_input": preferred_day_en,
         "preferred_day_mapped": preferred_day_fa,
         "record_no_used": record_no,
@@ -648,110 +506,3 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         "score_formula": "0.45*time + 0.15*insurance + 0.20*patient_priority + 0.10*patient_value + followup_boost + top300_boost + tier_boost",
         "recommendations": recommendations,
     }
-
-
-
-
-# =========================
-# FORCE FIX: patient context loader override
-# =========================
-
-def _load_patient_context(record_no: str) -> dict:
-    ctx = {
-        "record_no_used": record_no,
-        "financial_tier": None,
-        "financial_value_score": None,
-        "lifetime_net_received": None,
-        "last_payment_date_raw": None,
-        "in_followup_queue": False,
-        "in_scheduling_top300": False,
-        "scheduling_band": None,
-        "scheduling_priority_score": None,
-        "patient_priority_score": 0.0,
-        "patient_value_score": 0.0,
-        "followup_boost": 0.0,
-        "top300_boost": 0.0,
-        "tier_boost": 0.0,
-    }
-
-    rn = str(record_no or "").strip()
-    if not rn:
-        return ctx
-
-    fin_db = _resolve_financial_db()
-    if not fin_db.exists():
-        return ctx
-
-    conn = _sqlite3.connect(str(fin_db))
-    conn.row_factory = _sqlite3.Row
-    cur = conn.cursor()
-
-    try:
-        row = None
-        try:
-            row = cur.execute(
-                """
-                SELECT
-                    record_no,
-                    financial_tier,
-                    financial_value_score,
-                    lifetime_net_received,
-                    last_payment_date_raw
-                FROM financial_identity_profile
-                WHERE CAST(record_no AS TEXT) = ?
-                LIMIT 1
-                """,
-                (rn,),
-            ).fetchone()
-        except _sqlite3.OperationalError:
-            row = None
-
-        if row:
-            d = dict(row)
-            ctx["financial_tier"] = d.get("financial_tier")
-            ctx["financial_value_score"] = d.get("financial_value_score")
-            ctx["lifetime_net_received"] = d.get("lifetime_net_received")
-            ctx["last_payment_date_raw"] = d.get("last_payment_date_raw")
-
-        try:
-            f_row = cur.execute(
-                """
-                SELECT action_type
-                FROM v_financial_followup_queue_contactable
-                WHERE CAST(record_no AS TEXT) = ?
-                LIMIT 1
-                """,
-                (rn,),
-            ).fetchone()
-            if f_row:
-                ctx["in_followup_queue"] = True
-        except _sqlite3.OperationalError:
-            pass
-
-        try:
-            s_row = cur.execute(
-                """
-                SELECT scheduling_band, scheduling_priority_score
-                FROM v_financial_scheduling_queue_top300
-                WHERE CAST(record_no AS TEXT) = ?
-                LIMIT 1
-                """,
-                (rn,),
-            ).fetchone()
-            if s_row:
-                ctx["in_scheduling_top300"] = True
-                ctx["scheduling_band"] = s_row[0]
-                ctx["scheduling_priority_score"] = s_row[1]
-        except _sqlite3.OperationalError:
-            pass
-
-    finally:
-        conn.close()
-
-    ctx["patient_value_score"] = _coerce_score01(ctx["financial_value_score"], default=0.0)
-    ctx["patient_priority_score"] = _coerce_score01(ctx["scheduling_priority_score"], default=0.0)
-    ctx["followup_boost"] = 0.08 if ctx["in_followup_queue"] else 0.0
-    ctx["top300_boost"] = 0.12 if ctx["in_scheduling_top300"] else 0.0
-    ctx["tier_boost"] = _tier_boost(ctx["financial_tier"])
-
-    return ctx

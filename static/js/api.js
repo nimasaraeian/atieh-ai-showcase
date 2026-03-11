@@ -79,6 +79,10 @@ const API = (() => {
         getPatients: (search = "", limit = 20, offset = 0) =>
             request(`/patients?search=${encodeURIComponent(search)}&limit=${limit}&offset=${offset}`),
 
+        // دریافت پروفایل بیمار بر اساس شماره پرونده (record_no) از Backend عملیاتی
+        getPatientByRecordNo: (recordNo) =>
+            request(`/patients/${encodeURIComponent(String(recordNo || "").trim())}`),
+
         resolveRecordNo: (recordNo) =>
             request(`/patients/by-record-no/${encodeURIComponent(String(recordNo || "").trim())}`),
 

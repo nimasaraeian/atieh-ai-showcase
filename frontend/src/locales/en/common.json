@@ -117,6 +117,7 @@
     "completed": "Completed",
     "pending": "Pending",
     "cancelled": "Cancelled",
+    "confirmed": "Confirmed",
     "inProgress": "In Progress",
     "no_show": "No-Show"
   },
@@ -185,6 +186,7 @@
     "tryDifferentFilters": "Try different filters",
     "bookThisSlot": "Book This Slot",
     "score": "Score",
+    "aiScore": "AI Score",
     "days": {
       "Saturday": "Saturday",
       "Sunday": "Sunday",
@@ -194,8 +196,53 @@
       "Thursday": "Thursday",
       "Friday": "Friday"
     },
+    "insuranceLoadDelayed": "Insurance list load delayed",
+    "insuranceLoadFailed": "Insurance list load delayed",
     "insuranceValue": "Financial value of this insurance in the model: {{value}}",
     "insuranceListTitle": "Insurance plans and their financial value in the model",
-    "insuranceListScoreUnknown": "No score"
+    "insuranceListScoreUnknown": "No score",
+    "inProgress": "In progress",
+    "notRecorded": "Not recorded",
+    "paymentType": {
+      "cash": "Cash",
+      "cashAlt": "Cash",
+      "insurance": "Insurance",
+      "mixed": "Mixed"
+    },
+    "invalidRecordNo": "Valid record number not registered for this patient",
+    "bookingNotConnected": "Final booking not yet connected to backend.",
+    "selectedPatientProfile": "Selected patient profile",
+    "loadingProfile": "Loading patient profile...",
+    "noPatientSelected": "No patient selected yet.",
+    "profileFields": {
+      "name": "Name",
+      "recordNo": "Record #",
+      "mobile": "Mobile",
+      "internalId": "Internal ID",
+      "firstVisitDate": "First visit date",
+      "paymentType": "Payment type",
+      "patientValueScore": "Patient value score",
+      "financialTier": "Financial tier",
+      "totalReceived": "Total received",
+      "lastPayment": "Last payment",
+      "inFollowupQueue": "In follow-up queue",
+      "followupType": "Follow-up type",
+      "inTop300": "In Top300",
+      "priorityBand": "Priority band",
+      "schedulingPriorityScore": "Scheduling priority score"
+    },
+    "yes": "Yes",
+    "no": "No",
+    "aiDecision": "AI decides",
+    "finalBooking": "Final Booking",
+    "patient": "Patient",
+    "serviceLabel": "Service",
+    "selectedSlot": "Selected slot",
+    "date": "Date",
+    "bookingSuccess": "Appointment saved successfully",
+    "missingFields": "Please fill in all required fields",
+    "finalizedBookingsTitle": "Finalized Appointments",
+    "finalizedBookingsSubtitle": "Appointments booked via AI recommendation",
+    "noFinalizedBookings": "No appointments finalized yet"
   }
 }

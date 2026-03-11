@@ -208,6 +208,11 @@ def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[
                 for r in cur.fetchall():
                     d = dict(r)
                     rn = (d.get("record_no") or "").strip() if d.get("record_no") else ""
+
+                    # FIX: record_no must be numeric only
+                    if not rn.isdigit():
+                        rn = None
+
                     if rn and rn in seen_record_no:
                         continue
                     pk = f"{d.get('patient_name','')}|{d.get('mobile','')}"

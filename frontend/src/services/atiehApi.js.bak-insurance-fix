@@ -1,4 +1,3 @@
-import insuranceCatalog from '../data/insuranceCatalog'
 export const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 function extractError(payload) {
@@ -14,35 +13,6 @@ function extractError(payload) {
 }
 
 const REQUEST_TIMEOUT_MS = 15000
-
-const INSURANCE_CACHE_KEY = 'atieh_insurance_catalog'
-
-function normalizeInsuranceResponse(response) {
-  const raw = Array.isArray(response)
-    ? response
-    : Array.isArray(response?.items)
-      ? response.items
-      : []
-
-  return raw
-    .map((i) => {
-      const val = i?.value ?? i?.name ?? i?.label ?? i?.id ?? ''
-      const lbl = i?.label ?? i?.name ?? i?.value ?? i?.id ?? ''
-      const s = String(val).trim()
-      if (!s) return null
-      const upper = s.toUpperCase()
-      if (upper === 'CASH' || s === 'نقد' || s === 'نقدی') return null
-
-      return {
-        id: String(i?.id ?? val),
-        value: String(val),
-        label: String(lbl),
-        name: String(i?.name ?? lbl),
-      }
-    })
-    .filter(Boolean)
-}
-
 
 const INSURANCE_TIMEOUT_MS = 30000
 
@@ -94,13 +64,6 @@ export const atiehApi = {
   getInsurances: () => request('/ai/engine/catalog/insurances', {}, INSURANCE_TIMEOUT_MS),
 
   createAppointment: (body) => request('/appointments', { method: 'POST', body: JSON.stringify(body) }),
-
-  /** Finalize AI-recommended slot and persist to ai_finalized_bookings */
-  finalizeBooking: (body) =>
-    request('/api/receptionist/finalize-booking', { method: 'POST', body: JSON.stringify(body) }),
-
-  getFinalizedBookings: (limit = 100) =>
-    request(`/api/receptionist/finalized-bookings?limit=${limit}`),
 
   getAppointmentsToday: () => request('/appointments?limit=100'),
 

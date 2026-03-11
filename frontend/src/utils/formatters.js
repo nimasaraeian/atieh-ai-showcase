@@ -3,6 +3,8 @@
  * Uses current i18n language for digit/currency display.
  */
 
+import { toJalaali } from 'jalaali-js'
+
 const CURRENCY_UNITS = { fa: 'تومان', en: 'Toman' }
 
 export function getLocale(lng) {
@@ -133,3 +135,22 @@ export function formatCurrencyValue(n, lng = 'en') {
 }
 
 export { CURRENCY_UNITS }
+
+/**
+ * Convert Gregorian date string (YYYY-MM-DD) to Shamsi (YYYY/MM/DD).
+ * @param {string} ymd - e.g. "2025-03-11"
+ * @returns {string} e.g. "1404/12/20" or empty string on failure
+ */
+export function gregorianToShamsi(ymd) {
+  if (!ymd || typeof ymd !== 'string') return ''
+  const parts = ymd.trim().split('-')
+  if (parts.length !== 3) return ''
+  try {
+    const [y, m, d] = parts.map(Number)
+    if (isNaN(y) || isNaN(m) || isNaN(d)) return ''
+    const j = toJalaali(y, m, d)
+    return `${j.jy}/${String(j.jm).padStart(2, '0')}/${String(j.jd).padStart(2, '0')}`
+  } catch {
+    return ''
+  }
+}

@@ -7,13 +7,15 @@
     "dev": "vite",
     "build": "vite build",
     "build:backend": "vite build --base /app/",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:encoding": "python ../scripts/check_encoding.py"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.4",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "i18next": "^25.8.17",
+    "jalaali-js": "^1.2.8",
     "lucide-react": "^0.577.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

@@ -1,0 +1,63 @@
+﻿<div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+
+  <p className="mb-1 text-xs font-semibold text-slate-400">
+    پروفایل بیمار انتخاب‌شده
+  </p>
+
+  {profileLoading && (
+    <p className="text-xs text-slate-500">
+      در حال بارگذاری پروفایل بیمار...
+    </p>
+  )}
+
+  {!profileLoading && profileError && (
+    <p className="text-xs text-red-400">{profileError}</p>
+  )}
+
+  {!profileLoading && !profileError && !selectedProfile && (
+    <p className="text-xs text-slate-500">
+      هنوز بیماری انتخاب نشده است.
+    </p>
+  )}
+
+  {!profileLoading && !profileError && selectedProfile && (
+    <div className="space-y-1 text-xs text-slate-300">
+
+      <p>
+        <span className="text-slate-500">نام:</span>{' '}
+        {formatFieldValue(selectedProfile.name ?? selectedProfile.patient_name)}
+      </p>
+
+      <p>
+        <span className="text-slate-500">شماره پرونده:</span>{' '}
+        {formatFieldValue(selectedPatient?.record_no ?? selectedProfile.record_no)}
+      </p>
+
+      <p>
+        <span className="text-slate-500">موبایل:</span>{' '}
+        {formatFieldValue(selectedProfile.phone ?? selectedProfile.mobile)}
+      </p>
+
+      <p>
+        <span className="text-slate-500">شناسه داخلی:</span>{' '}
+        {formatFieldValue(selectedProfile.id, 'progress')}
+      </p>
+
+      <p>
+        <span className="text-slate-500">تاریخ اولین مراجعه:</span>{' '}
+        {formatFieldValue(selectedProfile.first_visit_date, 'progress')}
+      </p>
+
+      <p>
+        <span className="text-slate-500">نوع پرداخت:</span>{' '}
+        {formatFieldValue(selectedProfile.payment_type, 'progress')}
+      </p>
+
+      <p>
+        <span className="text-slate-500">امتیاز ارزش بیمار:</span>{' '}
+        {formatFieldValue(selectedProfile.lifetime_value_score, 'progress')}
+      </p>
+
+    </div>
+  )}
+</div>

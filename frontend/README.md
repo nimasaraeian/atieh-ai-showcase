@@ -35,6 +35,16 @@ npm run build
 npm run preview   # serve production build
 ```
 
+## Encoding check
+
+Before commit, run to detect mojibake in `frontend/src`:
+
+```bash
+npm run check:encoding
+# or from repo root:
+python scripts/check_encoding.py
+```
+
 ## Routes
 
 | Path | Page |

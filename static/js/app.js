@@ -163,6 +163,18 @@ const App = (() => {
                         </p>
                     </div>
                 </div>
+
+                <div class="card">
+                    <div class="card__header">
+                        <div>
+                            <h3 class="card__title">پروفایل بیمار انتخاب‌شده</h3>
+                            <div class="card__subtitle">پس از انتخاب از جدول بالا، پروفایل واقعی از پایگاه داده نمایش داده می‌شود</div>
+                        </div>
+                    </div>
+                    <div class="card__body" id="selected-patient-profile">
+                        <div class="empty-state">هنوز بیماری انتخاب نشده است.</div>
+                    </div>
+                </div>
             </section>
         `;
 
@@ -502,6 +514,100 @@ const App = (() => {
             });
     }
 
+    function isNumericRecordNo(value) {
+        const v = String(value ?? "").trim();
+        return v !== "" && /^[0-9]+$/.test(v);
+    }
+
+    function formatFieldValue(value, mode) {
+        if (value === null || value === undefined || value === "") {
+            return mode === "progress" ? "در حال تکمیل" : "ثبت نشده";
+        }
+        return String(value);
+    }
+
+    async function loadSelectedPatientProfile(recordNo) {
+        const panel = document.getElementById("selected-patient-profile");
+        const rn = String(recordNo || "").trim();
+        if (!panel) return;
+
+        if (!isNumericRecordNo(rn)) {
+            panel.innerHTML = `<div class="error-state">شماره پرونده نامعتبر است.</div>`;
+            return;
+        }
+
+        panel.innerHTML = `<div class="loading-state">در حال بارگذاری پروفایل بیمار...</div>`;
+
+        try {
+            const data = await API.getPatientByRecordNo(rn);
+            const name = data.name ?? data.patient_name ?? "-";
+            const phone = data.phone ?? data.mobile ?? "-";
+            const patientId = data.id ?? null;
+            const firstVisit = data.first_visit_date ?? null;
+            const paymentType = data.payment_type ?? null;
+            const lvScore = data.lifetime_value_score ?? null;
+
+            panel.innerHTML = `
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-list">
+                            ${detailItem("نام بیمار", formatFieldValue(name))}
+                            ${detailItem("شماره پرونده", formatFieldValue(rn))}
+                            ${detailItem("موبایل", formatFieldValue(formatMobileDisplay(phone)))}
+                            ${detailItem("کد داخلی / ID بیمار", formatFieldValue(patientId))}
+                            ${detailItem("تاریخ اولین مراجعه", formatFieldValue(firstVisit, "progress"))}
+                            ${detailItem("نوع پرداخت (payment_type)", formatFieldValue(paymentType, "progress"))}
+                            ${detailItem("امتیاز ارزش مالی (lifetime_value_score)", formatFieldValue(lvScore, "progress"))}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch (err) {
+            panel.innerHTML = `<div class="error-state">خطا در دریافت پروفایل: ${escapeHtml(err.message || "خطای نامشخص")}</div>`;
+        }
+    }
+
+    function bindPatientSearchProfile() {
+        const tbody = document.getElementById("patient-results");
+        if (!tbody) return;
+
+        // کلیک روی دکمهٔ نمایش پروفایل
+        tbody.querySelectorAll(".table__action-btn[data-record-no]").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const recordNo = btn.getAttribute("data-record-no");
+                if (!isNumericRecordNo(recordNo)) {
+                    const panel = document.getElementById("selected-patient-profile");
+                    if (panel) {
+                        panel.innerHTML = `<div class="error-state">شماره پرونده معتبر برای این بیمار ثبت نشده است.</div>`;
+                    }
+                    showToast("شماره پرونده معتبر برای این بیمار ثبت نشده است");
+                    return;
+                }
+                await loadSelectedPatientProfile(recordNo);
+            });
+        });
+
+        // کلیک روی کل ردیف جدول
+        tbody.querySelectorAll("tr").forEach(row => {
+            row.addEventListener("click", async (e) => {
+                // اگر روی دکمه کلیک شده، handler بالا کار خود را انجام می‌دهد
+                if (e.target.closest(".table__action-btn")) return;
+                const btn = row.querySelector(".table__action-btn[data-record-no]");
+                if (!btn) return;
+                const recordNo = btn.getAttribute("data-record-no");
+                if (!isNumericRecordNo(recordNo)) {
+                    const panel = document.getElementById("selected-patient-profile");
+                    if (panel) {
+                        panel.innerHTML = `<div class="error-state">شماره پرونده معتبر برای این بیمار ثبت نشده است.</div>`;
+                    }
+                    showToast("شماره پرونده معتبر برای این بیمار ثبت نشده است");
+                    return;
+                }
+                await loadSelectedPatientProfile(recordNo);
+            });
+        });
+    }
+
     async function searchPatient() {
         const inputEl = document.getElementById("patient-search");
         const q = (inputEl && inputEl.value || "").trim();
@@ -524,28 +630,38 @@ const App = (() => {
                 return;
             }
 
-            rows.forEach(p => {
+            // ردیف‌ها را طوری مرتب می‌کنیم که موارد دارای شماره پرونده عددی در اول لیست قرار بگیرند
+            const orderedRows = [...rows].sort((a, b) => {
+                const ra = a.record_no ?? a.recordNo ?? "-";
+                const rb = b.record_no ?? b.recordNo ?? "-";
+                const na = isNumericRecordNo(ra) ? 1 : 0;
+                const nb = isNumericRecordNo(rb) ? 1 : 0;
+                return nb - na;
+            });
+
+            orderedRows.forEach(p => {
                 const tr = document.createElement("tr");
                 const recordNo = p.record_no ?? p.recordNo ?? "-";
-                const hasDetail = recordNo && String(recordNo) !== "-";
+                const hasDetail = recordNo && String(recordNo) !== "-" && isNumericRecordNo(recordNo);
                 const patientName = p.patient_name ?? p.patient_name_canonical ?? "-";
                 const mobileDisplay = formatMobileDisplay(p.mobile ?? p.mobile_canonical);
                 const lastPayment = p.last_payment_date_raw ?? "-";
                 const inTop300 = p.in_top300 ? "بله" : "-";
                 const inFollowup = p.in_followup_queue ? "بله" : "-";
+                const displayRecordNo = hasDetail ? recordNo : "ثبت نشده";
                 tr.innerHTML = `
                     <td>${escapeHtml(patientName)}</td>
                     <td>${escapeHtml(mobileDisplay)}</td>
-                    <td>${escapeHtml(recordNo)}</td>
+                    <td>${escapeHtml(displayRecordNo)}</td>
                     <td>${escapeHtml(lastPayment)}</td>
                     <td>${escapeHtml(inTop300)}</td>
                     <td>${escapeHtml(inFollowup)}</td>
-                    <td>${hasDetail ? `<button class="table__action-btn" data-record-no="${escapeHtml(String(recordNo))}">مشاهده</button>` : "-"}</td>
+                    <td>${hasDetail ? `<button class="table__action-btn" data-record-no="${escapeHtml(String(recordNo))}">نمایش پروفایل</button>` : "-"}</td>
                 `;
                 tbody.appendChild(tr);
             });
 
-            bindVipButtons();
+            bindPatientSearchProfile();
         } catch (err) {
             console.error("patient search error:", err);
             const msg = err && err.message ? String(err.message) : "خطا در اتصال به سرور";

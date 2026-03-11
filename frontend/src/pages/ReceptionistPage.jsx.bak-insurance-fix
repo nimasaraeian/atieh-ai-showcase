@@ -16,10 +16,10 @@ const TIER_COLORS = { VIP: 'text-amber-400', HIGH: 'text-emerald-400', MEDIUM: '
 
 const INSURANCE_CACHE_KEY = 'atieh_insurance_catalog'
 
-/** Fix mojibake encoding (نقد → نقد, نقدÛŒ → نقدی) */
+/** Fix mojibake encoding (Ù†Ù‚Ø¯ → نقد, Ù†Ù‚Ø¯ÛŒ → نقدی) */
 function fixMojibake(s) {
   if (!s || typeof s !== 'string') return s
-  return s.replace(/نقدÛŒ/g, 'نقدی').replace(/نقد/g, 'نقد')
+  return s.replace(/Ù†Ù‚Ø¯ÛŒ/g, 'نقدی').replace(/Ù†Ù‚Ø¯/g, 'نقد')
 }
 
 /** Normalize API response: array | {items} | invalid → array of {id,value,label,name} */
@@ -96,7 +96,6 @@ export function ReceptionistPage() {
   const [selectedSlot, setSelectedSlot] = useState(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [bookingMessage, setBookingMessage] = useState(null)
-  const [finalizedBookings, setFinalizedBookings] = useState([])
 
   useEffect(() => {
     atiehApi
@@ -158,20 +157,6 @@ export function ReceptionistPage() {
         }
       })
       .catch(() => setTodayAppts([]))
-  }, [])
-
-  function loadFinalizedBookings() {
-    atiehApi
-      .getFinalizedBookings()
-      .then((r) => {
-        const data = r?.data ?? []
-        setFinalizedBookings(Array.isArray(data) ? data : [])
-      })
-      .catch(() => setFinalizedBookings([]))
-  }
-
-  useEffect(() => {
-    loadFinalizedBookings()
   }, [])
 
   function isNumericRecordNo(value) {
@@ -360,36 +345,20 @@ export function ReceptionistPage() {
   }
 
   function handleFinalBooking() {
-    if (!selectedSlot || !selectedPatient?.record_no) return
-    const patientName = selectedProfile?.name ?? selectedProfile?.patient_name ?? selectedPatient?.patient_name ?? selectedPatient?.name ?? ''
-    const doctorName = selectedSlot?.doctor_name ?? ''
-    const dateVal = selectedSlot?.date ?? ''
-    const timeVal = selectedSlot?.time ?? ''
-    if (!patientName || !doctorName || !dateVal || !timeVal || !service) {
-      setBookingMessage(t('reception.missingFields') || 'لطفاً همه فیلدها را پر کنید')
-      return
-    }
     setBookingLoading(true)
     setBookingMessage(null)
     const payload = {
-      record_no: String(selectedPatient.record_no),
-      patient_name: patientName,
-      doctor_name: doctorName,
-      service: service || 'TREATMENT_1',
-      date: dateVal,
-      time: timeVal,
+      patient: selectedProfile?.name ?? selectedProfile?.patient_name,
+      record_no: selectedPatient?.record_no,
+      service,
+      insurance,
+      slot_id: selectedSlot?.slot_id ?? '-',
     }
-    atiehApi
-      .finalizeBooking(payload)
-      .then((created) => {
-        setBookingMessage(t('reception.bookingSuccess') || 'نوبت با موفقیت ثبت شد')
-        loadFinalizedBookings()
-        setSelectedSlot(null)
-      })
-      .catch((err) => {
-        setBookingMessage(err?.message || t('error') || 'خطا در ثبت نوبت')
-      })
-      .finally(() => setBookingLoading(false))
+    console.log('Final booking payload:', payload)
+    setTimeout(() => {
+      setBookingLoading(false)
+      setBookingMessage(t('reception.bookingNotConnected'))
+    }, 300)
   }
 
   const patients = searchResults ?? []
@@ -707,50 +676,6 @@ export function ReceptionistPage() {
           )}
         </SectionCard>
       </div>
-
-      <SectionCard
-        title={t('reception.finalizedBookingsTitle') || 'نوبت‌های ثبت نهایی شده'}
-        subtitle={t('reception.finalizedBookingsSubtitle') || 'نوبت‌هایی که از طریق پیشنهاد هوش مصنوعی ثبت شده‌اند'}
-      >
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-800/80 text-start text-xs text-slate-500">
-              <tr>
-                <th className="px-4 py-3">{t('reception.patient')}</th>
-                <th className="px-4 py-3">{t('reception.recordNo')}</th>
-                <th className="px-4 py-3">{t('reception.doctor')}</th>
-                <th className="px-4 py-3">{t('reception.date')}</th>
-                <th className="px-4 py-3">{t('reception.time')}</th>
-                <th className="px-4 py-3">{t('reception.serviceLabel')}</th>
-                <th className="px-4 py-3">{t('reception.status')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {finalizedBookings.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
-                    {t('reception.noFinalizedBookings') || 'هنوز نوبتی ثبت نشده است'}
-                  </td>
-                </tr>
-              ) : (
-                finalizedBookings.map((b) => (
-                  <tr key={b.id} className="border-t border-slate-800 hover:bg-slate-800/30">
-                    <td className="px-4 py-2.5 text-slate-200">{b.patient_name ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.record_no ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.doctor_name ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.date ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.time ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.service ?? '-'}</td>
-                    <td className="px-4 py-2.5">
-                      <StatusBadge status={b.status ?? 'confirmed'} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
 
       <SectionCard title={t('reception.todayAppointments')} subtitle={t('reception.todaySchedule')}>
         <div className="overflow-x-auto rounded-lg border border-slate-800">

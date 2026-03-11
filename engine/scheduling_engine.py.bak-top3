@@ -1,0 +1,77 @@
+
+def compute_ai_slot_score(slot, patient_profile):
+
+    financial = patient_profile.get("financial_value_score", 0.5)
+    payment   = slot.get("payment_score", 0.5)
+    doctor    = slot.get("doctor_match_score", 0.5)
+    time      = slot.get("time_score", 0.5)
+
+    score = (
+        financial * 0.35
+        + payment * 0.25
+        + doctor * 0.20
+        + time * 0.20
+    )
+
+    return score
+
+def compute_ai_slot_score(slot, patient_profile):
+
+    financial_score = patient_profile.get("financial_value_score", 0.5)
+
+    payment_type = patient_profile.get("payment_type", "INSURANCE")
+
+    if payment_type == "CASH":
+        payment_score = 1.0
+    else:
+        payment_score = 0.7
+
+    # ???? ???? ????? ?? ???? ???? ???
+    days_until_slot = slot.get("days_until_slot", 7)
+
+    if days_until_slot == 0:
+        time_score = 1.0
+    elif days_until_slot <= 2:
+        time_score = 0.9
+    elif days_until_slot <= 5:
+        time_score = 0.8
+    else:
+        time_score = 0.6
+
+    score = (
+        financial_score * 0.5
+        + payment_score * 0.3
+        + time_score * 0.2
+    )
+
+    return score
+def compute_ai_slot_score(slot, patient_profile):
+
+    financial_score = patient_profile.get("financial_value_score", 0.5)
+
+    payment_type = patient_profile.get("payment_type", "INSURANCE")
+
+    if payment_type == "CASH":
+        payment_score = 1.0
+    else:
+        payment_score = 0.7
+
+    # ???? ???? ????? ?? ???? ???? ???
+    days_until_slot = slot.get("days_until_slot", 7)
+
+    if days_until_slot == 0:
+        time_score = 1.0
+    elif days_until_slot <= 2:
+        time_score = 0.9
+    elif days_until_slot <= 5:
+        time_score = 0.8
+    else:
+        time_score = 0.6
+
+    score = (
+        financial_score * 0.5
+        + payment_score * 0.3
+        + time_score * 0.2
+    )
+
+    return score

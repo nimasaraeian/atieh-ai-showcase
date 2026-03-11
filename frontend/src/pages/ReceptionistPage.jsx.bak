@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '../components/layout/PageHeader'
 import { SectionCard } from '../components/ui/SectionCard'
@@ -13,61 +13,6 @@ import { DAYS_EN } from '../data/mockData'
 import { Calendar, Loader2 } from 'lucide-react'
 
 const TIER_COLORS = { VIP: 'text-amber-400', HIGH: 'text-emerald-400', MEDIUM: 'text-slate-300', LOW: 'text-slate-500' }
-
-const INSURANCE_CACHE_KEY = 'atieh_insurance_catalog'
-
-/** Fix mojibake encoding (نقد → نقد, نقدÛŒ → نقدی) */
-function fixMojibake(s) {
-  if (!s || typeof s !== 'string') return s
-  return s.replace(/نقدÛŒ/g, 'نقدی').replace(/نقد/g, 'نقد')
-}
-
-/** Normalize API response: array | {items} | invalid → array of {id,value,label,name} */
-function normalizeInsuranceResponse(response) {
-  const raw = Array.isArray(response)
-    ? response
-    : Array.isArray(response?.items)
-      ? response.items
-      : []
-
-  return raw
-    .map((i) => {
-      const val = i?.value ?? i?.name ?? i?.label ?? i?.id ?? i?.insurance_name ?? ''
-      const lbl = i?.label ?? i?.name ?? i?.value ?? i?.id ?? i?.insurance_name ?? ''
-      const s = fixMojibake(String(val).trim())
-      if (!s) return null
-
-      const upper = s.toUpperCase()
-      if (upper === 'CASH' || s === 'نقد' || s === 'نقدی') return null
-
-      return {
-        id: String(i?.id ?? val),
-        value: fixMojibake(String(val)),
-        label: fixMojibake(String(lbl || val)),
-        name: String(i?.name ?? lbl ?? val),
-      }
-    })
-    .filter(Boolean)
-}
-
-function loadInsurancesFromStorage() {
-  try {
-    const raw = localStorage.getItem(INSURANCE_CACHE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function saveInsurancesToStorage(arr) {
-  try {
-    if (Array.isArray(arr) && arr.length > 0) {
-      localStorage.setItem(INSURANCE_CACHE_KEY, JSON.stringify(arr))
-    }
-  } catch (_) {}
-}
 
 export function ReceptionistPage() {
   const { t, i18n } = useTranslation()
@@ -84,9 +29,7 @@ export function ReceptionistPage() {
   const [profileError, setProfileError] = useState(null)
   const [selectionError, setSelectionError] = useState(null)
   const [services, setServices] = useState([])
-  const [insurances, setInsurances] = useState(() => loadInsurancesFromStorage())
-  const [insuranceLoading, setInsuranceLoading] = useState(false)
-  const [insuranceError, setInsuranceError] = useState('')
+  const [insurances, setInsurances] = useState([])
   const [service, setService] = useState('')
   const [insurance, setInsurance] = useState('CASH')
   const [preferredDay, setPreferredDay] = useState('')
@@ -96,53 +39,41 @@ export function ReceptionistPage() {
   const [selectedSlot, setSelectedSlot] = useState(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [bookingMessage, setBookingMessage] = useState(null)
-  const [finalizedBookings, setFinalizedBookings] = useState([])
 
   useEffect(() => {
     atiehApi
       .getServices()
       .then((r) => setServices(Array.isArray(r) ? r : []))
       .catch(() => setServices([]))
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    setInsuranceLoading(true)
-    setInsuranceError('')
     atiehApi
       .getInsurances()
-      .then((response) => {
-        if (cancelled) return
-        console.log('INSURANCE API RAW =>', response)
-        const normalized = normalizeInsuranceResponse(response)
-        console.log('INSURANCE NORMALIZED =>', normalized)
-        if (Array.isArray(normalized) && normalized.length > 0) {
-          setInsurances(normalized)
-          saveInsurancesToStorage(normalized)
-          setInsuranceError('')
-          console.log('INSURANCE CACHE =>', localStorage.getItem(INSURANCE_CACHE_KEY))
-        } else {
-          const cached = loadInsurancesFromStorage()
-          if (Array.isArray(cached) && cached.length > 0) setInsurances(cached)
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return
-        console.log('INSURANCE API RAW =>', err)
-        const cached = loadInsurancesFromStorage()
-        console.log('INSURANCE CACHE =>', localStorage.getItem(INSURANCE_CACHE_KEY))
-        if (Array.isArray(cached) && cached.length > 0) {
-          setInsurances(cached)
-          setInsuranceError('')
-        } else {
+      .then((r) => {
+        if (!Array.isArray(r)) {
           setInsurances([])
-          setInsuranceError(t('reception.insuranceLoadFailed'))
+          return
+        }
+        if (r.length > 0 && typeof r[0] === 'object') {
+          setInsurances(
+            r
+              .filter((item) => {
+                const v = item.name ?? item.label ?? item.value ?? item.id ?? ''
+                return v !== '' && v != null
+              })
+              .map((item) => ({
+                name: item.name ?? item.label ?? item.value ?? String(item.id ?? ''),
+                label: item.label ?? item.name ?? item.value ?? String(item.id ?? ''),
+                priority_score: typeof item.priority_score === 'number' ? item.priority_score : null,
+              }))
+          )
+        } else {
+          setInsurances(
+            r
+              .filter((x) => x != null && String(x).trim() !== '')
+              .map((name) => ({ name: String(name), label: String(name), priority_score: null }))
+          )
         }
       })
-      .finally(() => {
-        if (!cancelled) setInsuranceLoading(false)
-      })
-    return () => { cancelled = true }
+      .catch(() => setInsurances([]))
   }, [])
 
   useEffect(() => {
@@ -160,20 +91,6 @@ export function ReceptionistPage() {
       .catch(() => setTodayAppts([]))
   }, [])
 
-  function loadFinalizedBookings() {
-    atiehApi
-      .getFinalizedBookings()
-      .then((r) => {
-        const data = r?.data ?? []
-        setFinalizedBookings(Array.isArray(data) ? data : [])
-      })
-      .catch(() => setFinalizedBookings([]))
-  }
-
-  useEffect(() => {
-    loadFinalizedBookings()
-  }, [])
-
   function isNumericRecordNo(value) {
     const v = String(value ?? '').trim()
     return v !== '' && /^[0-9]+$/.test(v)
@@ -181,7 +98,7 @@ export function ReceptionistPage() {
 
   function formatFieldValue(value, mode) {
     if (value === null || value === undefined || value === '') {
-      return mode === 'progress' ? t('reception.inProgress') : t('reception.notRecorded')
+      return mode === 'progress' ? 'در حال تکمیل' : 'ثبت نشده'
     }
     return String(value)
   }
@@ -204,17 +121,14 @@ export function ReceptionistPage() {
     return false
   }
 
-  /** Fix mojibake in strings - used by getPaymentTypeLabel etc */
-  const fixMojibakeCash = fixMojibake
-
   /** Derive payment type from cash_txn_count and insurance_txn_count (financial_profile). */
   function getPaymentTypeLabel(fp) {
     if (!fp || typeof fp !== 'object') return null
     const cash = Number(fp.cash_txn_count ?? 0) || 0
     const ins = Number(fp.insurance_txn_count ?? 0) || 0
-    if (cash > 0 && ins === 0) return t('reception.paymentType.cash')
-    if (ins > 0 && cash === 0) return t('reception.paymentType.insurance')
-    if (cash > 0 && ins > 0) return t('reception.paymentType.mixed')
+    if (cash > 0 && ins === 0) return 'نقد'
+    if (ins > 0 && cash === 0) return 'بیمه'
+    if (cash > 0 && ins > 0) return 'ترکیبی'
     return null
   }
 
@@ -254,7 +168,7 @@ export function ReceptionistPage() {
     if (!isNumericRecordNo(rn)) {
       setSelectedProfile(null)
       setSelectedFinancialProfile(null)
-      setProfileError(t('reception.invalidRecordNo'))
+      setProfileError('شماره پرونده معتبر برای این بیمار ثبت نشده است')
       return
     }
     setProfileLoading(true)
@@ -295,7 +209,7 @@ export function ReceptionistPage() {
       setSelectedPatient(null)
       setSelectedProfile(null)
       setSelectedFinancialProfile(null)
-      setSelectionError(t('reception.invalidRecordNo'))
+      setSelectionError('شماره پرونده معتبر برای این بیمار ثبت نشده است')
       setProfileError(null)
       return
     }
@@ -360,57 +274,46 @@ export function ReceptionistPage() {
   }
 
   function handleFinalBooking() {
-    if (!selectedSlot || !selectedPatient?.record_no) return
-    const patientName = selectedProfile?.name ?? selectedProfile?.patient_name ?? selectedPatient?.patient_name ?? selectedPatient?.name ?? ''
-    const doctorName = selectedSlot?.doctor_name ?? ''
-    const dateVal = selectedSlot?.date ?? ''
-    const timeVal = selectedSlot?.time ?? ''
-    if (!patientName || !doctorName || !dateVal || !timeVal || !service) {
-      setBookingMessage(t('reception.missingFields') || 'لطفاً همه فیلدها را پر کنید')
-      return
-    }
     setBookingLoading(true)
     setBookingMessage(null)
     const payload = {
-      record_no: String(selectedPatient.record_no),
-      patient_name: patientName,
-      doctor_name: doctorName,
-      service: service || 'TREATMENT_1',
-      date: dateVal,
-      time: timeVal,
+      patient: selectedProfile?.name ?? selectedProfile?.patient_name,
+      record_no: selectedPatient?.record_no,
+      service,
+      insurance,
+      slot_id: selectedSlot?.slot_id ?? '-',
     }
-    atiehApi
-      .finalizeBooking(payload)
-      .then((created) => {
-        setBookingMessage(t('reception.bookingSuccess') || 'نوبت با موفقیت ثبت شد')
-        loadFinalizedBookings()
-        setSelectedSlot(null)
-      })
-      .catch((err) => {
-        setBookingMessage(err?.message || t('error') || 'خطا در ثبت نوبت')
-      })
-      .finally(() => setBookingLoading(false))
+    console.log('Final booking payload:', payload)
+    setTimeout(() => {
+      setBookingLoading(false)
+      setBookingMessage('ثبت نهایی هنوز به بک‌اند متصل نشده است.')
+    }, 300)
   }
 
   const patients = searchResults ?? []
   const stats = { today: todayAppts.length }
 
-  const insuranceOptions = useMemo(() => {
-    const list = Array.isArray(insurances) ? insurances : []
-    const options = [
-      { id: 'CASH', value: 'CASH', label: 'نقد', name: 'نقد' },
-      ...list,
-    ]
-    console.log('INSURANCE OPTIONS =>', options.length, options)
-    return options
-  }, [insurances])
+  const insuranceOptions = [
+    { value: 'CASH', label: 'نقد', priority_score: null },
+    ...insurances
+      .filter((i) => {
+        const val = typeof i === 'string' ? i : (i.name ?? i.label ?? i.value ?? '')
+        return val && String(val).trim() !== '' && String(val) !== 'CASH'
+      })
+      .map((i) => {
+        if (typeof i === 'string') {
+          return { value: String(i), label: String(i), priority_score: null }
+        }
+        const name = i.name ?? i.label ?? i.value ?? ''
+        return {
+          value: String(name),
+          label: String(i.label ?? i.name ?? i.value ?? name),
+          priority_score: typeof i.priority_score === 'number' ? i.priority_score : null,
+        }
+      }),
+  ]
 
-  useEffect(() => {
-    const found = insuranceOptions.some((opt) => opt.value === insurance || opt.id === insurance)
-    if (insuranceOptions.length > 0 && !found && insurance) {
-      setInsurance('CASH')
-    }
-  }, [insuranceOptions, insurance])
+  const selectedInsuranceObj = insuranceOptions.find((opt) => opt.value === insurance)
 
   return (
     <div className="space-y-6" dir={lng === 'fa' ? 'rtl' : 'ltr'}>
@@ -420,7 +323,7 @@ export function ReceptionistPage() {
       />
 
       <p className="text-[10px] text-slate-500 text-right">
-        REACT RECEPTION PATCH ACTIVE -- API_BASE: {API_BASE || '(relative / proxy)'}, profile endpoint: /patients/&#123;record_no&#125;
+        REACT RECEPTION PATCH ACTIVE – API_BASE: {API_BASE || '(relative / proxy)'}, profile endpoint: /patients/&#123;record_no&#125;
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -479,7 +382,7 @@ export function ReceptionistPage() {
                   {patients.map((p) => {
                     const rn = p.record_no ?? p.recordNo
                     const hasNumeric = isNumericRecordNo(rn)
-                    const displayRecordNo = hasNumeric ? rn : t('reception.notRecorded')
+                    const displayRecordNo = hasNumeric ? rn : 'ثبت نشده'
                     const key = `${p.record_no ?? p.recordNo ?? p.patient_name ?? p.name}-${p.mobile ?? p.mobile_canonical ?? ''}`
                     return (
                       <tr
@@ -508,83 +411,83 @@ export function ReceptionistPage() {
 
         <SectionCard title={t('reception.aiRecommendation')} subtitle={t('reception.aiRecommendationSubtitle')}>
           <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-            <p className="mb-1 text-xs font-semibold text-slate-400">{t('reception.selectedPatientProfile')}</p>
+            <p className="mb-1 text-xs font-semibold text-slate-400">پروفایل بیمار انتخاب‌شده</p>
             {profileLoading && (
-              <p className="text-xs text-slate-500">{t('reception.loadingProfile')}</p>
+              <p className="text-xs text-slate-500">در حال بارگذاری پروفایل بیمار...</p>
             )}
             {!profileLoading && profileError && (
               <p className="text-xs text-red-400">{profileError}</p>
             )}
             {!profileLoading && !profileError && !selectedProfile && (
-              <p className="text-xs text-slate-500">{t('reception.noPatientSelected')}</p>
+              <p className="text-xs text-slate-500">هنوز بیماری انتخاب نشده است.</p>
             )}
             {!profileLoading && !profileError && selectedProfile && (
               <div className="space-y-1 text-xs text-slate-300">
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.name')}:</span>{' '}
+                  <span className="text-slate-500">نام:</span>{' '}
                   {selectedProfile.name ?? selectedProfile.patient_name ?? formatFieldValue(null)}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.recordNo')}:</span>{' '}
-                  {selectedPatient?.record_no ?? selectedProfile.record_no ?? t('reception.notRecorded')}
+                  <span className="text-slate-500">شماره پرونده:</span>{' '}
+                  {selectedPatient?.record_no ?? selectedProfile.record_no ?? 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.mobile')}:</span>{' '}
+                  <span className="text-slate-500">موبایل:</span>{' '}
                   {selectedProfile.phone ?? selectedProfile.mobile ?? formatFieldValue(null)}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.internalId')}:</span>{' '}
+                  <span className="text-slate-500">شناسه داخلی:</span>{' '}
                   {formatFieldValue(selectedProfile.id, 'progress')}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.firstVisitDate')}:</span>{' '}
+                  <span className="text-slate-500">تاریخ اولین مراجعه:</span>{' '}
                   {formatFieldValue(selectedProfile.first_visit_date, 'progress')}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.paymentType')}:</span>{' '}
-                  {getPaymentTypeLabel(selectedFinancialProfile?.financial_profile) ?? t('reception.notRecorded')}
+                  <span className="text-slate-500">نوع پرداخت:</span>{' '}
+                  {getPaymentTypeLabel(selectedFinancialProfile?.financial_profile) ?? 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.patientValueScore')}:</span>{' '}
+                  <span className="text-slate-500">امتیاز ارزش بیمار:</span>{' '}
                   {selectedFinancialProfile?.financial_profile?.financial_value_score != null
                     ? String(selectedFinancialProfile.financial_profile.financial_value_score)
-                    : t('reception.notRecorded')}
+                    : 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.financialTier')}:</span>{' '}
-                  {selectedFinancialProfile?.financial_profile?.financial_tier ?? t('reception.notRecorded')}
+                  <span className="text-slate-500">سطح مالی:</span>{' '}
+                  {selectedFinancialProfile?.financial_profile?.financial_tier ?? 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.totalReceived')}:</span>{' '}
+                  <span className="text-slate-500">جمع ارزش دریافتی:</span>{' '}
                   {selectedFinancialProfile?.financial_profile?.lifetime_net_received != null
                     ? formatCurrency(selectedFinancialProfile.financial_profile.lifetime_net_received, lng)
-                    : t('reception.notRecorded')}
+                    : 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.lastPayment')}:</span>{' '}
-                  {selectedFinancialProfile?.financial_profile?.last_payment_date_raw ?? t('reception.notRecorded')}
+                  <span className="text-slate-500">آخرین پرداخت:</span>{' '}
+                  {selectedFinancialProfile?.financial_profile?.last_payment_date_raw ?? 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.inFollowupQueue')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.in_followup_queue === true ? t('reception.yes') : t('reception.no')}
+                  <span className="text-slate-500">در صف پیگیری:</span>{' '}
+                  {selectedFinancialProfile?.operational_status?.in_followup_queue === true ? 'بله' : 'خیر'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.followupType')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.followup_action_type ?? t('reception.notRecorded')}
+                  <span className="text-slate-500">نوع پیگیری:</span>{' '}
+                  {selectedFinancialProfile?.operational_status?.followup_action_type ?? 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.inTop300')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.in_scheduling_top300 === true ? t('reception.yes') : t('reception.no')}
+                  <span className="text-slate-500">در Top300:</span>{' '}
+                  {selectedFinancialProfile?.operational_status?.in_scheduling_top300 === true ? 'بله' : 'خیر'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.priorityBand')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.scheduling_band ?? t('reception.notRecorded')}
+                  <span className="text-slate-500">باند اولویت:</span>{' '}
+                  {selectedFinancialProfile?.operational_status?.scheduling_band ?? 'ثبت نشده'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.schedulingPriorityScore')}:</span>{' '}
+                  <span className="text-slate-500">امتیاز اولویت نوبت:</span>{' '}
                   {selectedFinancialProfile?.operational_status?.scheduling_priority_score != null
                     ? String(selectedFinancialProfile.operational_status.scheduling_priority_score)
-                    : t('reception.notRecorded')}
+                    : 'ثبت نشده'}
                 </p>
               </div>
             )}
@@ -606,22 +509,25 @@ export function ReceptionistPage() {
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs text-slate-500">
-                {t('reception.insurance')}
-                {insuranceLoading && <span className="ml-1 text-cyan-400">({t('loading')})</span>}
-                {insuranceError && <span className="ml-1 text-slate-500 text-[10px]">({insuranceError})</span>}
-              </label>
+              <label className="mb-1 block text-xs text-slate-500">{t('reception.insurance')}</label>
               <select
                 value={insurance}
                 onChange={(e) => setInsurance(e.target.value)}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
               >
                 {insuranceOptions.map((opt) => (
-                  <option key={opt.id ?? opt.value} value={opt.value}>
+                  <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
                 ))}
               </select>
+              {selectedInsuranceObj && selectedInsuranceObj.priority_score != null && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {t('reception.insuranceValue', {
+                    value: selectedInsuranceObj.priority_score.toFixed(2),
+                  })}
+                </p>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-xs text-slate-500">{t('reception.preferredDay')}</label>
@@ -630,7 +536,7 @@ export function ReceptionistPage() {
                 onChange={(e) => setPreferredDay(e.target.value)}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
               >
-                <option value="">{t('reception.aiDecision')}</option>
+                <option value="">تصمیم با هوش مصنوعی</option>
                 {DAYS_EN.map((d) => (
                   <option key={d} value={d}>
                     {t(`reception.days.${d}`)}
@@ -663,26 +569,26 @@ export function ReceptionistPage() {
           </div>
           {selectedSlot && (
             <div className="mt-4 rounded-lg border border-slate-700 bg-slate-800/30 p-4">
-              <p className="mb-3 text-sm font-semibold text-slate-300">{t('reception.finalBooking')}</p>
+              <p className="mb-3 text-sm font-semibold text-slate-300">ثبت نهایی نوبت</p>
               <div className="space-y-1 text-xs text-slate-300">
                 <p>
-                  <span className="text-slate-500">{t('reception.patient')}:</span>{' '}
+                  <span className="text-slate-500">بیمار:</span>{' '}
                   {selectedProfile?.name ?? selectedProfile?.patient_name ?? '-'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.profileFields.recordNo')}:</span>{' '}
+                  <span className="text-slate-500">شماره پرونده:</span>{' '}
                   {selectedPatient?.record_no ?? '-'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.serviceLabel')}:</span>{' '}
+                  <span className="text-slate-500">خدمت:</span>{' '}
                   {service || '-'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.insurance')}:</span>{' '}
-                  {insuranceOptions.find((o) => o.value === insurance)?.label ?? insurance ?? '-'}
+                  <span className="text-slate-500">بیمه:</span>{' '}
+                  {selectedInsuranceObj?.label ?? insurance ?? '-'}
                 </p>
                 <p>
-                  <span className="text-slate-500">{t('reception.selectedSlot')}:</span>{' '}
+                  <span className="text-slate-500">اسلات انتخاب‌شده:</span>{' '}
                   {selectedSlot?.slot_id ?? '-'}
                 </p>
               </div>
@@ -697,7 +603,7 @@ export function ReceptionistPage() {
                     {t('loading')}
                   </>
                 ) : (
-                  t('reception.finalBooking')
+                  'ثبت نهایی نوبت'
                 )}
               </button>
               {bookingMessage && (
@@ -707,50 +613,6 @@ export function ReceptionistPage() {
           )}
         </SectionCard>
       </div>
-
-      <SectionCard
-        title={t('reception.finalizedBookingsTitle') || 'نوبت‌های ثبت نهایی شده'}
-        subtitle={t('reception.finalizedBookingsSubtitle') || 'نوبت‌هایی که از طریق پیشنهاد هوش مصنوعی ثبت شده‌اند'}
-      >
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-800/80 text-start text-xs text-slate-500">
-              <tr>
-                <th className="px-4 py-3">{t('reception.patient')}</th>
-                <th className="px-4 py-3">{t('reception.recordNo')}</th>
-                <th className="px-4 py-3">{t('reception.doctor')}</th>
-                <th className="px-4 py-3">{t('reception.date')}</th>
-                <th className="px-4 py-3">{t('reception.time')}</th>
-                <th className="px-4 py-3">{t('reception.serviceLabel')}</th>
-                <th className="px-4 py-3">{t('reception.status')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {finalizedBookings.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
-                    {t('reception.noFinalizedBookings') || 'هنوز نوبتی ثبت نشده است'}
-                  </td>
-                </tr>
-              ) : (
-                finalizedBookings.map((b) => (
-                  <tr key={b.id} className="border-t border-slate-800 hover:bg-slate-800/30">
-                    <td className="px-4 py-2.5 text-slate-200">{b.patient_name ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.record_no ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.doctor_name ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.date ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.time ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.service ?? '-'}</td>
-                    <td className="px-4 py-2.5">
-                      <StatusBadge status={b.status ?? 'confirmed'} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
 
       <SectionCard title={t('reception.todayAppointments')} subtitle={t('reception.todaySchedule')}>
         <div className="overflow-x-auto rounded-lg border border-slate-800">
@@ -783,10 +645,3 @@ export function ReceptionistPage() {
     </div>
   )
 }
-
-
-
-
-
-
-

@@ -117,6 +117,7 @@
     "completed": "تکمیل شده",
     "pending": "در انتظار",
     "cancelled": "لغو شده",
+    "confirmed": "تأیید شده",
     "inProgress": "در حال انجام",
     "no_show": "غیبت"
   },
@@ -185,6 +186,7 @@
     "tryDifferentFilters": "فیلترها را عوض کنید",
     "bookThisSlot": "رزرو این نوبت",
     "score": "امتیاز",
+    "aiScore": "امتیاز AI",
     "days": {
       "Saturday": "شنبه",
       "Sunday": "یکشنبه",
@@ -194,8 +196,53 @@
       "Thursday": "پنج‌شنبه",
       "Friday": "جمعه"
     },
+    "insuranceLoadDelayed": "بارگذاری لیست بیمه با تأخیر روبه‌رو شد",
+    "insuranceLoadFailed": "بارگذاری لیست بیمه با تأخیر روبه‌رو شد",
     "insuranceValue": "ارزش مالی این بیمه در مدل: {{value}}",
     "insuranceListTitle": "لیست بیمه‌ها و ارزش مالی در مدل",
-    "insuranceListScoreUnknown": "بدون امتیاز ثبت‌شده"
+    "insuranceListScoreUnknown": "بدون امتیاز ثبت‌شده",
+    "inProgress": "در حال تکمیل",
+    "notRecorded": "ثبت نشده",
+    "paymentType": {
+      "cash": "نقد",
+      "cashAlt": "نقدی",
+      "insurance": "بیمه",
+      "mixed": "ترکیبی"
+    },
+    "invalidRecordNo": "شماره پرونده معتبر برای این بیمار ثبت نشده است",
+    "bookingNotConnected": "ثبت نهایی هنوز به بک‌اند متصل نشده است.",
+    "selectedPatientProfile": "پروفایل بیمار انتخاب‌شده",
+    "loadingProfile": "در حال بارگذاری پروفایل بیمار...",
+    "noPatientSelected": "هنوز بیماری انتخاب نشده است.",
+    "profileFields": {
+      "name": "نام",
+      "recordNo": "شماره پرونده",
+      "mobile": "موبایل",
+      "internalId": "شناسه داخلی",
+      "firstVisitDate": "تاریخ اولین مراجعه",
+      "paymentType": "نوع پرداخت",
+      "patientValueScore": "امتیاز ارزش بیمار",
+      "financialTier": "سطح مالی",
+      "totalReceived": "جمع ارزش دریافتی",
+      "lastPayment": "آخرین پرداخت",
+      "inFollowupQueue": "در صف پیگیری",
+      "followupType": "نوع پیگیری",
+      "inTop300": "در Top300",
+      "priorityBand": "باند اولویت",
+      "schedulingPriorityScore": "امتیاز اولویت نوبت"
+    },
+    "yes": "بله",
+    "no": "خیر",
+    "aiDecision": "تصمیم با هوش مصنوعی",
+    "finalBooking": "ثبت نهایی نوبت",
+    "patient": "بیمار",
+    "serviceLabel": "خدمت",
+    "selectedSlot": "اسلات انتخاب‌شده",
+    "date": "تاریخ",
+    "bookingSuccess": "نوبت با موفقیت ثبت شد",
+    "missingFields": "لطفاً همه فیلدها را پر کنید",
+    "finalizedBookingsTitle": "نوبت‌های ثبت نهایی شده",
+    "finalizedBookingsSubtitle": "نوبت‌هایی که از طریق پیشنهاد هوش مصنوعی ثبت شده‌اند",
+    "noFinalizedBookings": "هنوز نوبتی ثبت نشده است"
   }
 }

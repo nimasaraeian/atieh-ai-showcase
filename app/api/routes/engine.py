@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -49,7 +50,7 @@ def recommend_slot(payload: dict = Body(...)):
         logger.info("recommend-slot raw payload=%r", payload)
         logger.info("recommend-slot mapped preferred_day=%r", preferred_day)
 
-        result = recommend_slots_from_db(db_payload, top_n=200)
+        result = recommend_slots_from_db(db_payload, top_n=50)
 
         logger.info(
             "recommend-slot completed | count=%s | preferred_day_input=%s | preferred_day_mapped=%s",
@@ -97,159 +98,40 @@ def get_services():
 @router.get("/catalog/insurances")
 def get_insurances():
     """
-    Return insurance catalog for dropdowns in the AI scheduling form.
-
-    Priority:
-      1) Normalized DB tables/views (stg_payments, insurance_priority / v_insurance_priority)
-      2) CSV catalogs in data/...
+    Return insurance catalog from lightweight JSON file only.
+    No DB or CSV – fast, non-blocking response.
     """
-    # 1) Try to load from SQLite DB (normalized sources)
-    items: list[dict] = []
-    try:
-      conn = sqlite3.connect(DB_PATH)
-      conn.row_factory = sqlite3.Row
-      cur = conn.cursor()
-
-      # 1a) stg_payments: distinct insurer_name_norm
-      exists = cur.execute(
-          "SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name = 'stg_payments'"
-      ).fetchone()
-      if exists:
-          rows = cur.execute(
-              "SELECT DISTINCT insurer_name_norm "
-              "FROM stg_payments WHERE insurer_name_norm IS NOT NULL"
-          ).fetchall()
-          for (name,) in rows:
-              n = str(name)
-              if not n:
-                  continue
-              items.append(
-                  {
-                      "id": n,
-                      "value": n,
-                      "label": n,
-                      "name": n,
-                  }
-              )
-
-      # 1b) Fallback to insurance_priority / v_insurance_priority
-      if not items:
-          for table in ["insurance_priority", "v_insurance_priority"]:
-              exists = cur.execute(
-                  "SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name = ?",
-                  (table,),
-              ).fetchone()
-              if not exists:
-                  continue
-
-              cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
-              name_col = None
-              for cand in ["insurer_name_norm", "insurance_name"]:
-                  if cand in cols:
-                      name_col = cand
-                      break
-              score_col = "priority_score" if "priority_score" in cols else None
-              if not name_col:
-                  continue
-
-              select_cols = [name_col]
-              if score_col:
-                  select_cols.append(score_col)
-              rows = cur.execute(
-                  f"SELECT {', '.join(select_cols)} FROM {table} "
-                  f"WHERE {name_col} IS NOT NULL"
-              ).fetchall()
-
-              for row in rows:
-                  n = str(row[name_col])
-                  if not n:
-                      continue
-                  item = {
-                      "id": n,
-                      "value": n,
-                      "label": n,
-                      "name": n,
-                  }
-                  if score_col:
-                      try:
-                          score_val = row[score_col]
-                          if score_val is not None:
-                              item["priority_score"] = float(score_val)
-                      except (TypeError, ValueError):
-                          pass
-                  items.append(item)
-
-      conn.close()
-    except Exception as exc:
-        logger.warning("get_insurances: DB lookup failed – %s", exc)
-
-    if items:
-        # Sort by priority_score (descending) when available, otherwise by name.
-        items.sort(
-            key=lambda x: (
-                -float(x.get("priority_score", 0.0)),
-                str(x.get("label") or x.get("name") or ""),
-            )
-        )
-        return items
-
-    # 2) Fall back to CSV catalogs
-    path = _resolve_catalog_path([
-        "data/reference/insurance_payment_priority.csv",
-        "data/outputs/insurance_priority.csv",
-        "data/inputs/payments/insurance_payment_priority.csv",
-        "data/reference/insurance_priority.csv",
-    ])
-
-    if not path:
-        logger.warning("insurance catalog not found; returning empty list")
-        return []
-
-    df = pd.read_csv(path, encoding="utf-8-sig")
-
-    # Pick a reasonable display/name column
-    col = next(
-        (
-            c
-            for c in [
-                "insurance_name",
-                "insurer_name_norm",
-                "payer_source_norm",
-            ]
-            if c in df.columns
-        ),
-        df.columns[0],
-    )
-
-    score_col = "priority_score" if "priority_score" in df.columns else None
-
-    df = df.dropna(subset=[col]).drop_duplicates(subset=[col])
-
-    items = []
-    for _, row in df.iterrows():
-        name = str(row[col])
-        item = {
-            "id": name,
-            "value": name,
-            "label": name,
-            "name": name,
-        }
-        if score_col is not None:
-            try:
-                score_val = row.get(score_col)
-                if score_val is not None:
-                    item["priority_score"] = float(score_val)
-            except (TypeError, ValueError):
-                # Ignore non-numeric scores; frontend and engine will fall back to defaults.
-                pass
-        items.append(item)
-
-    # Sort by priority_score (descending) when available, otherwise by name.
-    items.sort(
-        key=lambda x: (
-            -float(x.get("priority_score", 0.0)),
-            str(x.get("label") or x.get("name") or ""),
-        )
-    )
-
-    return items
+    _base = Path(__file__).resolve().parent.parent.parent.parent
+    for json_path in [
+        Path("data/outputs/insurance_priority.json"),
+        _base / "data" / "outputs" / "insurance_priority.json",
+    ]:
+        if not json_path.exists():
+            continue
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            raw_items = data.get("items") or []
+            items = []
+            for x in raw_items:
+                name = (x.get("insurance_name") or x.get("name") or x.get("label") or "").strip()
+                if not name:
+                    continue
+                score = x.get("priority_score")
+                try:
+                    score = float(score) if score is not None else None
+                except (TypeError, ValueError):
+                    score = None
+                items.append({
+                    "id": name,
+                    "value": name,
+                    "label": name,
+                    "name": name,
+                    "priority_score": score,
+                })
+            items.sort(key=lambda i: (-(i.get("priority_score") or 0.0), i.get("label", "")))
+            return items
+        except Exception as exc:
+            logger.warning("get_insurances: JSON load failed – %s", exc)
+            return []
+    return []
