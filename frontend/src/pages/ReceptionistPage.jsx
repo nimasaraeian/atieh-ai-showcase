@@ -8,11 +8,7 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { RecommendationCard } from '../components/ui/RecommendationCard'
 import { atiehApi } from '../services/atiehApi'
-import {
-  MOCK_PATIENTS,
-  MOCK_TODAY_APPOINTMENTS,
-  DAYS_EN,
-} from '../data/mockData'
+import { DAYS_EN } from '../data/mockData'
 import { Users, Calendar, Loader2, User } from 'lucide-react'
 
 const TIER_COLORS = { VIP: 'text-amber-400', HIGH: 'text-emerald-400', MEDIUM: 'text-slate-300', LOW: 'text-slate-500' }
@@ -22,6 +18,9 @@ export function ReceptionistPage() {
   const lng = i18n.language || 'en'
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState(null)
+  const [searchCount, setSearchCount] = useState(null)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState(null)
   const [selectedPatient, setSelectedPatient] = useState(null)
   const [services, setServices] = useState([])
   const [insurances, setInsurances] = useState([])
@@ -30,7 +29,7 @@ export function ReceptionistPage() {
   const [preferredDay, setPreferredDay] = useState('Monday')
   const [recommendations, setRecommendations] = useState(null)
   const [loadingRec, setLoadingRec] = useState(false)
-  const [todayAppts, setTodayAppts] = useState(MOCK_TODAY_APPOINTMENTS)
+  const [todayAppts, setTodayAppts] = useState([])
 
   useEffect(() => {
     atiehApi
@@ -61,19 +60,62 @@ export function ReceptionistPage() {
       .catch(() => setInsurances([]))
   }, [])
 
+  useEffect(() => {
+    // Load today's appointments from real backend; empty list means no appointments.
+    atiehApi
+      .getAppointmentsToday()
+      .then((r) => {
+        if (Array.isArray(r)) {
+          setTodayAppts(r)
+        } else if (Array.isArray(r.data)) {
+          setTodayAppts(r.data)
+        } else {
+          setTodayAppts([])
+        }
+      })
+      .catch(() => {
+        // Backend currently returns an empty list by design; on error, stay empty but UI remains honest.
+        setTodayAppts([])
+      })
+  }, [])
+
   function handleSearch() {
-    if (!searchQ.trim()) {
-      setSearchResults(MOCK_PATIENTS)
+    const q = searchQ.trim()
+    if (!q) {
+      // Empty query: clear results and keep UI in a neutral state.
+      setSearchResults([])
+      setSearchCount(0)
+      setSearchError(null)
       return
     }
+
+    setSearchLoading(true)
+    setSearchError(null)
+    setSelectedPatient(null)
+
     atiehApi
-      .searchPatients(searchQ)
-      .then((r) => setSearchResults(r.data ?? []))
-      .catch(() => setSearchResults(MOCK_PATIENTS.filter((p) => p.patient_name?.includes(searchQ) || p.record_no?.toString().includes(searchQ))))
+      .searchPatients(q)
+      .then((r) => {
+        const data = Array.isArray(r?.data) ? r.data : []
+        const count = typeof r?.count === 'number' ? r.count : data.length
+        setSearchResults(data)
+        setSearchCount(count)
+      })
+      .catch((err) => {
+        setSearchResults([])
+        setSearchCount(0)
+        setSearchError(err?.message || t('error'))
+      })
+      .finally(() => {
+        setSearchLoading(false)
+      })
   }
 
   function handleRecommend() {
-    const rec = selectedPatient?.record_no ?? 139990
+    if (!selectedPatient || !selectedPatient.record_no) {
+      return
+    }
+    const rec = selectedPatient.record_no
     setLoadingRec(true)
     setRecommendations(null)
     atiehApi
@@ -83,8 +125,8 @@ export function ReceptionistPage() {
       .finally(() => setLoadingRec(false))
   }
 
-  const patients = searchResults ?? MOCK_PATIENTS
-  const stats = { today: todayAppts.length, waiting: 2, vip: 3, doctors: 4 }
+  const patients = searchResults ?? []
+  const stats = { today: todayAppts.length }
 
   const selectedInsuranceObj =
     Array.isArray(insurances) && insurances.length > 0 && typeof insurances[0] === 'object'
