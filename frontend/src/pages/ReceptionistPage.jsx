@@ -1,77 +1,71 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '../components/layout/PageHeader'
 import { SectionCard } from '../components/ui/SectionCard'
 import { SearchBar } from '../components/ui/SearchBar'
-import { StatCard } from '../components/ui/StatCard'
 import { EmptyState } from '../components/ui/EmptyState'
-import { StatusBadge } from '../components/ui/StatusBadge'
 import { RecommendationCard } from '../components/ui/RecommendationCard'
-import { atiehApi, API_BASE } from '../services/atiehApi'
-import { formatCurrency } from '../utils/formatters'
+import { Loader2 } from 'lucide-react'
+import { atiehApi } from '../services/atiehApi'
 import { DAYS_EN } from '../data/mockData'
-import { Calendar, Loader2 } from 'lucide-react'
+import { formatCurrency } from '../utils/formatters'
 
-const TIER_COLORS = { VIP: 'text-amber-400', HIGH: 'text-emerald-400', MEDIUM: 'text-slate-300', LOW: 'text-slate-500' }
+const NOT_RECORDED = 'ثبت نشده'
+const IN_PROGRESS = 'در حال تکمیل'
+const LOADING = 'در حال بارگذاری'
+const NOT_AVAILABLE = 'موجود نیست'
 
-const INSURANCE_CACHE_KEY = 'atieh_insurance_catalog'
-
-/** Fix mojibake encoding (نقد → نقد, نقدÛŒ → نقدی) */
-function fixMojibake(s) {
-  if (!s || typeof s !== 'string') return s
-  return s.replace(/نقدÛŒ/g, 'نقدی').replace(/نقد/g, 'نقد')
+function isNumericRecordNo(value) {
+  const v = String(value ?? '').trim()
+  if (v === '' || v === '-') return false
+  return /^[0-9]+$/.test(v)
 }
 
-/** Normalize API response: array | {items} | invalid → array of {id,value,label,name} */
-function normalizeInsuranceResponse(response) {
-  const raw = Array.isArray(response)
-    ? response
-    : Array.isArray(response?.items)
-      ? response.items
-      : []
+function formatFieldValue(value, mode) {
+  if (value === null || value === undefined || value === '') {
+    return mode === 'progress' ? IN_PROGRESS : NOT_RECORDED
+  }
+  return String(value)
+}
 
-  return raw
+function getPaymentTypeLabel(fp) {
+  if (!fp || typeof fp !== 'object') return null
+  const cash = Number(fp?.cash_txn_count ?? 0) || 0
+  const ins = Number(fp?.insurance_txn_count ?? 0) || 0
+  if (cash > 0 && ins === 0) return 'نقد'
+  if (ins > 0 && cash === 0) return 'بیمه'
+  if (cash > 0 && ins > 0) return 'ترکیبی'
+  return null
+}
+
+function normalizeServices(response) {
+  if (Array.isArray(response)) {
+    return response.map((s) => (s?.value ?? s?.name ?? s?.label ?? s?.id ?? s)?.toString?.() ?? String(s)).filter(Boolean)
+  }
+  if (response && typeof response === 'object' && Array.isArray(response?.items)) {
+    return response.items.map((s) => (s?.value ?? s?.name ?? s?.label ?? s?.id ?? s)?.toString?.() ?? String(s)).filter(Boolean)
+  }
+  return []
+}
+
+function normalizeInsurances(response) {
+  const raw = Array.isArray(response) ? response : (Array.isArray(response?.items) ? response.items : [])
+  return (raw ?? [])
     .map((i) => {
-      const val = i?.value ?? i?.name ?? i?.label ?? i?.id ?? i?.insurance_name ?? ''
-      const lbl = i?.label ?? i?.name ?? i?.value ?? i?.id ?? i?.insurance_name ?? ''
-      const s = fixMojibake(String(val).trim())
+      const val = i?.value ?? i?.name ?? i?.label ?? i?.id ?? ''
+      const lbl = i?.label ?? i?.name ?? i?.value ?? i?.id ?? ''
+      const s = String(val ?? '').trim()
       if (!s) return null
-
       const upper = s.toUpperCase()
       if (upper === 'CASH' || s === 'نقد' || s === 'نقدی') return null
-
-      return {
-        id: String(i?.id ?? val),
-        value: fixMojibake(String(val)),
-        label: fixMojibake(String(lbl || val)),
-        name: String(i?.name ?? lbl ?? val),
-      }
+      return { id: String(i?.id ?? val ?? ''), value: String(val), label: String(lbl || val) }
     })
     .filter(Boolean)
 }
 
-function loadInsurancesFromStorage() {
-  try {
-    const raw = localStorage.getItem(INSURANCE_CACHE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function saveInsurancesToStorage(arr) {
-  try {
-    if (Array.isArray(arr) && arr.length > 0) {
-      localStorage.setItem(INSURANCE_CACHE_KEY, JSON.stringify(arr))
-    }
-  } catch (_) {}
-}
-
 export function ReceptionistPage() {
   const { t, i18n } = useTranslation()
-  const lng = i18n.language || 'en'
+  const lng = i18n?.language || 'en'
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState(null)
   const [searchCount, setSearchCount] = useState(null)
@@ -84,169 +78,61 @@ export function ReceptionistPage() {
   const [profileError, setProfileError] = useState(null)
   const [selectionError, setSelectionError] = useState(null)
   const [services, setServices] = useState([])
-  const [insurances, setInsurances] = useState(() => loadInsurancesFromStorage())
-  const [insuranceLoading, setInsuranceLoading] = useState(false)
-  const [insuranceError, setInsuranceError] = useState('')
+  const [insurances, setInsurances] = useState([])
   const [service, setService] = useState('')
   const [insurance, setInsurance] = useState('CASH')
+  const [insuranceLoading, setInsuranceLoading] = useState(false)
+  const [insuranceError, setInsuranceError] = useState(null)
   const [preferredDay, setPreferredDay] = useState('')
   const [recommendations, setRecommendations] = useState(null)
   const [loadingRec, setLoadingRec] = useState(false)
-  const [todayAppts, setTodayAppts] = useState([])
-  const [selectedSlot, setSelectedSlot] = useState(null)
-  const [bookingLoading, setBookingLoading] = useState(false)
-  const [bookingMessage, setBookingMessage] = useState(null)
-  const [finalizedBookings, setFinalizedBookings] = useState([])
 
   useEffect(() => {
-    atiehApi
-      .getServices()
-      .then((r) => setServices(Array.isArray(r) ? r : []))
+    atiehApi.getServices()
+      .then((r) => setServices(normalizeServices(r ?? null)))
       .catch(() => setServices([]))
   }, [])
 
   useEffect(() => {
-    let cancelled = false
     setInsuranceLoading(true)
-    setInsuranceError('')
+    setInsuranceError(null)
+    atiehApi.getInsurances()
+      .then((r) => {
+        const list = normalizeInsurances(r ?? null)
+        setInsurances(list)
+        setInsuranceError(null)
+      })
+      .catch(() => {
+        setInsurances([])
+        setInsuranceError(NOT_AVAILABLE)
+      })
+      .finally(() => setInsuranceLoading(false))
+  }, [])
+
+  function handleSearch() {
+    const q = String(searchQ ?? '').trim()
+    if (!q) {
+      setSearchResults([])
+      setSearchCount(0)
+      setSearchError(null)
+      return
+    }
+    setSearchLoading(true)
+    setSearchError(null)
     atiehApi
-      .getInsurances()
-      .then((response) => {
-        if (cancelled) return
-        console.log('INSURANCE API RAW =>', response)
-        const normalized = normalizeInsuranceResponse(response)
-        console.log('INSURANCE NORMALIZED =>', normalized)
-        if (Array.isArray(normalized) && normalized.length > 0) {
-          setInsurances(normalized)
-          saveInsurancesToStorage(normalized)
-          setInsuranceError('')
-          console.log('INSURANCE CACHE =>', localStorage.getItem(INSURANCE_CACHE_KEY))
-        } else {
-          const cached = loadInsurancesFromStorage()
-          if (Array.isArray(cached) && cached.length > 0) setInsurances(cached)
-        }
+      .searchPatients(q)
+      .then((r) => {
+        const raw = Array.isArray(r?.data) ? r.data : []
+        const count = typeof r?.count === 'number' ? r.count : raw.length
+        setSearchResults(raw)
+        setSearchCount(count)
       })
       .catch((err) => {
-        if (cancelled) return
-        console.log('INSURANCE API RAW =>', err)
-        const cached = loadInsurancesFromStorage()
-        console.log('INSURANCE CACHE =>', localStorage.getItem(INSURANCE_CACHE_KEY))
-        if (Array.isArray(cached) && cached.length > 0) {
-          setInsurances(cached)
-          setInsuranceError('')
-        } else {
-          setInsurances([])
-          setInsuranceError(t('reception.insuranceLoadFailed'))
-        }
+        setSearchResults([])
+        setSearchCount(0)
+        setSearchError(err?.message || t('error') || 'Search failed')
       })
-      .finally(() => {
-        if (!cancelled) setInsuranceLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
-    atiehApi
-      .getAppointmentsToday()
-      .then((r) => {
-        if (Array.isArray(r)) {
-          setTodayAppts(r)
-        } else if (Array.isArray(r?.data)) {
-          setTodayAppts(r.data)
-        } else {
-          setTodayAppts([])
-        }
-      })
-      .catch(() => setTodayAppts([]))
-  }, [])
-
-  function loadFinalizedBookings() {
-    atiehApi
-      .getFinalizedBookings()
-      .then((r) => {
-        const data = r?.data ?? []
-        setFinalizedBookings(Array.isArray(data) ? data : [])
-      })
-      .catch(() => setFinalizedBookings([]))
-  }
-
-  useEffect(() => {
-    loadFinalizedBookings()
-  }, [])
-
-  function isNumericRecordNo(value) {
-    const v = String(value ?? '').trim()
-    return v !== '' && /^[0-9]+$/.test(v)
-  }
-
-  function formatFieldValue(value, mode) {
-    if (value === null || value === undefined || value === '') {
-      return mode === 'progress' ? t('reception.inProgress') : t('reception.notRecorded')
-    }
-    return String(value)
-  }
-
-  function getFirstDefined(...values) {
-    for (const v of values) {
-      if (v !== null && v !== undefined && v !== '') return v
-    }
-    return null
-  }
-
-  function getFin(obj, ...keys) {
-    if (!obj || typeof obj !== 'object') return null
-    return getFirstDefined(...keys.map((k) => obj[k]))
-  }
-
-  function getFinBool(obj, ...keys) {
-    const v = getFin(obj, ...keys)
-    if (v === true || v === 1 || String(v).toLowerCase() === 'true') return true
-    return false
-  }
-
-  /** Fix mojibake in strings - used by getPaymentTypeLabel etc */
-  const fixMojibakeCash = fixMojibake
-
-  /** Derive payment type from cash_txn_count and insurance_txn_count (financial_profile). */
-  function getPaymentTypeLabel(fp) {
-    if (!fp || typeof fp !== 'object') return null
-    const cash = Number(fp.cash_txn_count ?? 0) || 0
-    const ins = Number(fp.insurance_txn_count ?? 0) || 0
-    if (cash > 0 && ins === 0) return t('reception.paymentType.cash')
-    if (ins > 0 && cash === 0) return t('reception.paymentType.insurance')
-    if (cash > 0 && ins > 0) return t('reception.paymentType.mixed')
-    return null
-  }
-
-  function dedupeAndOrderPatients(rows) {
-    if (!Array.isArray(rows)) return []
-    const byKey = new Map()
-    for (const r of rows) {
-      const name = r.patient_name ?? r.patient_name_canonical ?? r.name ?? ''
-      const mobile = r.mobile ?? r.mobile_canonical ?? r.phone ?? ''
-      const key = `${name}|${mobile}`
-      const existing = byKey.get(key)
-      const rn = r.record_no ?? r.recordNo ?? null
-      const hasNumeric = rn && isNumericRecordNo(rn)
-      if (!existing) {
-        byKey.set(key, r)
-        continue
-      }
-      const existingRn = existing.record_no ?? existing.recordNo ?? null
-      const existingHasNumeric = existingRn && isNumericRecordNo(existingRn)
-      if (!existingHasNumeric && hasNumeric) {
-        byKey.set(key, r)
-      }
-    }
-    const list = Array.from(byKey.values())
-    list.sort((a, b) => {
-      const ra = a.record_no ?? a.recordNo ?? ''
-      const rb = b.record_no ?? b.recordNo ?? ''
-      const na = isNumericRecordNo(ra) ? 1 : 0
-      const nb = isNumericRecordNo(rb) ? 1 : 0
-      return nb - na
-    })
-    return list
+      .finally(() => setSearchLoading(false))
   }
 
   function loadSelectedProfile(recordNo) {
@@ -254,163 +140,82 @@ export function ReceptionistPage() {
     if (!isNumericRecordNo(rn)) {
       setSelectedProfile(null)
       setSelectedFinancialProfile(null)
-      setProfileError(t('reception.invalidRecordNo'))
+      setProfileError(t('reception.invalidRecordNo') || 'Invalid record number')
       return
     }
     setProfileLoading(true)
     setProfileError(null)
-
     Promise.allSettled([
       atiehApi.getPatientByRecordNo(rn),
       atiehApi.getFinancialPatientDetail(rn),
     ])
       .then(([baseRes, finRes]) => {
-        if (baseRes.status === 'fulfilled') {
-          setSelectedProfile(baseRes.value || null)
-        } else {
-          setSelectedProfile(null)
-        }
-
-        if (finRes.status === 'fulfilled') {
-          setSelectedFinancialProfile(finRes.value || null)
-        } else {
-          setSelectedFinancialProfile(null)
-        }
-
-        if (baseRes.status !== 'fulfilled') {
-          setProfileError((baseRes.reason?.message) || t('error'))
+        setSelectedProfile(baseRes?.status === 'fulfilled' ? (baseRes.value ?? null) : null)
+        setSelectedFinancialProfile(finRes?.status === 'fulfilled' ? (finRes.value ?? null) : null)
+        if (baseRes?.status !== 'fulfilled') {
+          setProfileError(baseRes?.reason?.message || t('error') || 'Failed to load profile')
         }
       })
       .catch((err) => {
         setSelectedProfile(null)
         setSelectedFinancialProfile(null)
-        setProfileError(err?.message || t('error'))
+        setProfileError(err?.message || t('error') || 'Failed to load profile')
       })
       .finally(() => setProfileLoading(false))
   }
 
   function handleSelectPatient(row) {
-    const rn = row?.record_no
-    if (!isNumericRecordNo(rn)) {
+    const rn = row?.record_no ?? row?.recordNo
+    if (!row || !isNumericRecordNo(rn)) {
       setSelectedPatient(null)
       setSelectedProfile(null)
       setSelectedFinancialProfile(null)
-      setSelectionError(t('reception.invalidRecordNo'))
+      setSelectionError(t('reception.invalidRecordNo') || 'Invalid record number')
       setProfileError(null)
       return
     }
     setSelectionError(null)
-    setSelectedPatient(row)
-    setSelectedSlot(null)
+    setSelectedPatient({ ...row, record_no: rn })
     loadSelectedProfile(rn)
   }
 
-  function handleSearch() {
-    const q = searchQ.trim()
-    if (!q) {
-      setSearchResults([])
-      setSearchCount(0)
-      setSearchError(null)
-      return
-    }
-
-    setSearchLoading(true)
-    setSearchError(null)
-    setSelectionError(null)
-    setSelectedPatient(null)
-    setSelectedProfile(null)
-    setSelectedFinancialProfile(null)
-    setSelectedSlot(null)
-
-    atiehApi
-      .searchPatients(q)
-      .then((r) => {
-        const raw = Array.isArray(r?.data) ? r.data : []
-        const data = dedupeAndOrderPatients(raw)
-        const count = typeof r?.count === 'number' ? r.count : data.length
-        setSearchResults(data)
-        setSearchCount(count)
-      })
-      .catch((err) => {
-        setSearchResults([])
-        setSearchCount(0)
-        setSearchError(err?.message || t('error'))
-      })
-      .finally(() => setSearchLoading(false))
-  }
-
   function handleRecommend() {
-    if (!selectedPatient || !selectedPatient.record_no) {
-      return
-    }
-    const rec = selectedPatient.record_no
+    const rec = selectedPatient?.record_no ?? ''
+    if (!selectedPatient || !isNumericRecordNo(rec)) return
     setLoadingRec(true)
     setRecommendations(null)
-    setSelectedSlot(null)
     atiehApi
       .recommendSlot({
         record_no: rec,
         service: service || 'TREATMENT_1',
-        insurance,
+        insurance: insurance || 'CASH',
         preferred_day: preferredDay || null,
       })
-      .then((r) => setRecommendations(r.ok ? r.recommendations ?? [] : []))
+      .then((r) => {
+        const list = (r && r.ok) ? (Array.isArray(r.recommendations) ? r.recommendations : []) : []
+        setRecommendations(list)
+      })
       .catch(() => setRecommendations([]))
       .finally(() => setLoadingRec(false))
   }
 
-  function handleFinalBooking() {
-    if (!selectedSlot || !selectedPatient?.record_no) return
-    const patientName = selectedProfile?.name ?? selectedProfile?.patient_name ?? selectedPatient?.patient_name ?? selectedPatient?.name ?? ''
-    const doctorName = selectedSlot?.doctor_name ?? ''
-    const dateVal = selectedSlot?.date ?? ''
-    const timeVal = selectedSlot?.time ?? ''
-    if (!patientName || !doctorName || !dateVal || !timeVal || !service) {
-      setBookingMessage(t('reception.missingFields') || 'لطفاً همه فیلدها را پر کنید')
-      return
+  function safeSlot(s) {
+    if (!s || typeof s !== 'object') return { doctor_name: '—', date: '', time: '', floor: '', unit: '', reasons: [] }
+    return {
+      ...s,
+      doctor_name: s?.doctor_name ?? '—',
+      date: s?.date ?? '',
+      time: s?.time ?? '—',
+      floor: s?.floor ?? '',
+      unit: s?.unit ?? '',
+      reasons: Array.isArray(s?.reasons) ? s.reasons : [],
     }
-    setBookingLoading(true)
-    setBookingMessage(null)
-    const payload = {
-      record_no: String(selectedPatient.record_no),
-      patient_name: patientName,
-      doctor_name: doctorName,
-      service: service || 'TREATMENT_1',
-      date: dateVal,
-      time: timeVal,
-    }
-    atiehApi
-      .finalizeBooking(payload)
-      .then((created) => {
-        setBookingMessage(t('reception.bookingSuccess') || 'نوبت با موفقیت ثبت شد')
-        loadFinalizedBookings()
-        setSelectedSlot(null)
-      })
-      .catch((err) => {
-        setBookingMessage(err?.message || t('error') || 'خطا در ثبت نوبت')
-      })
-      .finally(() => setBookingLoading(false))
   }
 
   const patients = searchResults ?? []
-  const stats = { today: todayAppts.length }
-
-  const insuranceOptions = useMemo(() => {
-    const list = Array.isArray(insurances) ? insurances : []
-    const options = [
-      { id: 'CASH', value: 'CASH', label: 'نقد', name: 'نقد' },
-      ...list,
-    ]
-    console.log('INSURANCE OPTIONS =>', options.length, options)
-    return options
-  }, [insurances])
-
-  useEffect(() => {
-    const found = insuranceOptions.some((opt) => opt.value === insurance || opt.id === insurance)
-    if (insuranceOptions.length > 0 && !found && insurance) {
-      setInsurance('CASH')
-    }
-  }, [insuranceOptions, insurance])
+  const slots = recommendations ?? []
+  const recNo = selectedPatient?.record_no ?? ''
+  const canRecommend = selectedPatient && isNumericRecordNo(recNo)
 
   return (
     <div className="space-y-6" dir={lng === 'fa' ? 'rtl' : 'ltr'}>
@@ -418,15 +223,9 @@ export function ReceptionistPage() {
         title={t('reception.title')}
         subtitle={t('reception.subtitle')}
       />
-
-      <p className="text-[10px] text-slate-500 text-right">
-        REACT RECEPTION PATCH ACTIVE -- API_BASE: {API_BASE || '(relative / proxy)'}, profile endpoint: /patients/&#123;record_no&#125;
-      </p>
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard title={t('reception.todayAppointments')} value={stats.today} icon={Calendar} accent="cyan" />
-      </div>
-
+      <SectionCard title="Status" subtitle="Search + Profile + Service & Insurance + Slots">
+        <p className="text-slate-200">Receptionist Page Loaded</p>
+      </SectionCard>
       <div className="grid gap-6 lg:grid-cols-2">
         <SectionCard title={t('reception.patientSearch')} subtitle={t('reception.patientSearchSubtitle')}>
           <SearchBar
@@ -435,35 +234,19 @@ export function ReceptionistPage() {
             onSearch={handleSearch}
             placeholder={t('reception.searchPlaceholder')}
           />
-          {searchLoading && (
-            <p className="mt-2 text-xs text-slate-500">{t('loading')}</p>
-          )}
+          {searchLoading && <p className="mt-2 text-xs text-slate-500">{t('loading')}</p>}
           {!searchLoading && searchCount != null && (
             <p className="mt-2 text-xs text-slate-500">
-              {searchCount === 0
-                ? t('reception.noPatientsFound')
-                : t('chart.count') + ': ' + searchCount}
+              {searchCount === 0 ? t('reception.noPatientsFound') : `${t('chart.count') || 'Count'}: ${searchCount}`}
             </p>
           )}
-          {searchError && (
-            <p className="mt-2 text-xs text-red-400">{searchError}</p>
-          )}
-          {selectionError && (
-            <p className="mt-2 text-xs text-red-400">{selectionError}</p>
-          )}
+          {searchError && <p className="mt-2 text-xs text-red-400">{searchError}</p>}
+          {selectionError && <p className="mt-2 text-xs text-red-400">{selectionError}</p>}
           <div className="mt-4 max-h-64 overflow-y-auto rounded-lg border border-slate-800">
             {patients.length === 0 ? (
               <EmptyState
-                title={
-                  searchQ.trim()
-                    ? t('reception.noPatientsFound')
-                    : t('empty')
-                }
-                message={
-                  searchQ.trim()
-                    ? t('reception.tryDifferentSearch')
-                    : t('reception.patientSearchSubtitle')
-                }
+                title={searchQ.trim() ? t('reception.noPatientsFound') : t('empty')}
+                message={searchQ.trim() ? t('reception.tryDifferentSearch') : t('reception.patientSearchSubtitle')}
               />
             ) : (
               <table className="w-full text-sm">
@@ -476,27 +259,19 @@ export function ReceptionistPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {patients.map((p) => {
-                    const rn = p.record_no ?? p.recordNo
-                    const hasNumeric = isNumericRecordNo(rn)
-                    const displayRecordNo = hasNumeric ? rn : t('reception.notRecorded')
-                    const key = `${p.record_no ?? p.recordNo ?? p.patient_name ?? p.name}-${p.mobile ?? p.mobile_canonical ?? ''}`
+                  {(patients ?? []).filter(Boolean).map((p, idx) => {
+                    const rn = p?.record_no ?? p?.recordNo
+                    const isSelected = selectedPatient && (selectedPatient?.record_no === rn || selectedPatient?.record_no === p?.record_no)
                     return (
                       <tr
-                        key={key}
+                        key={`${rn ?? idx}-${p?.mobile ?? idx}`}
                         onClick={() => handleSelectPatient({ ...p, record_no: rn })}
-                        className={`cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50 ${
-                          selectedPatient?.record_no === p.record_no ? 'bg-cyan-500/10' : ''
-                        }`}
+                        className={`cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50 ${isSelected ? 'bg-cyan-500/10' : ''}`}
                       >
-                        <td className="px-4 py-2.5 font-medium text-slate-200">{p.patient_name ?? p.name}</td>
-                        <td className="px-4 py-2.5 text-slate-400">{displayRecordNo}</td>
-                        <td className="px-4 py-2.5 text-slate-400">{p.mobile ?? p.mobile_canonical}</td>
-                        <td className="px-4 py-2.5">
-                          <span className={TIER_COLORS[p.financial_tier ?? p.tier] ?? 'text-slate-400'}>
-                            {p.financial_tier ?? p.tier ?? '-'}
-                          </span>
-                        </td>
+                        <td className="px-4 py-2.5 font-medium text-slate-200">{p?.patient_name ?? p?.name ?? '-'}</td>
+                        <td className="px-4 py-2.5 text-slate-400">{rn ?? '-'}</td>
+                        <td className="px-4 py-2.5 text-slate-400">{p?.mobile ?? p?.mobile_canonical ?? p?.phone ?? '-'}</td>
+                        <td className="px-4 py-2.5 text-slate-400">{p?.financial_tier ?? p?.tier ?? '-'}</td>
                       </tr>
                     )
                   })}
@@ -505,288 +280,112 @@ export function ReceptionistPage() {
             )}
           </div>
         </SectionCard>
-
-        <SectionCard title={t('reception.aiRecommendation')} subtitle={t('reception.aiRecommendationSubtitle')}>
-          <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-            <p className="mb-1 text-xs font-semibold text-slate-400">{t('reception.selectedPatientProfile')}</p>
-            {profileLoading && (
-              <p className="text-xs text-slate-500">{t('reception.loadingProfile')}</p>
-            )}
-            {!profileLoading && profileError && (
-              <p className="text-xs text-red-400">{profileError}</p>
-            )}
-            {!profileLoading && !profileError && !selectedProfile && (
+        <SectionCard title={t('reception.selectedPatientProfile')} subtitle="">
+          <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+            {profileLoading && <p className="text-xs text-slate-500">{t('reception.loadingProfile')}</p>}
+            {!profileLoading && profileError && <p className="text-xs text-red-400">{profileError}</p>}
+            {!profileLoading && !profileError && !selectedPatient && (
               <p className="text-xs text-slate-500">{t('reception.noPatientSelected')}</p>
             )}
-            {!profileLoading && !profileError && selectedProfile && (
+            {!profileLoading && !profileError && selectedPatient && (
               <div className="space-y-1 text-xs text-slate-300">
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.name')}:</span>{' '}
-                  {selectedProfile.name ?? selectedProfile.patient_name ?? formatFieldValue(null)}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.recordNo')}:</span>{' '}
-                  {selectedPatient?.record_no ?? selectedProfile.record_no ?? t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.mobile')}:</span>{' '}
-                  {selectedProfile.phone ?? selectedProfile.mobile ?? formatFieldValue(null)}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.internalId')}:</span>{' '}
-                  {formatFieldValue(selectedProfile.id, 'progress')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.firstVisitDate')}:</span>{' '}
-                  {formatFieldValue(selectedProfile.first_visit_date, 'progress')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.paymentType')}:</span>{' '}
-                  {getPaymentTypeLabel(selectedFinancialProfile?.financial_profile) ?? t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.patientValueScore')}:</span>{' '}
-                  {selectedFinancialProfile?.financial_profile?.financial_value_score != null
-                    ? String(selectedFinancialProfile.financial_profile.financial_value_score)
-                    : t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.financialTier')}:</span>{' '}
-                  {selectedFinancialProfile?.financial_profile?.financial_tier ?? t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.totalReceived')}:</span>{' '}
-                  {selectedFinancialProfile?.financial_profile?.lifetime_net_received != null
-                    ? formatCurrency(selectedFinancialProfile.financial_profile.lifetime_net_received, lng)
-                    : t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.lastPayment')}:</span>{' '}
-                  {selectedFinancialProfile?.financial_profile?.last_payment_date_raw ?? t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.inFollowupQueue')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.in_followup_queue === true ? t('reception.yes') : t('reception.no')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.followupType')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.followup_action_type ?? t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.inTop300')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.in_scheduling_top300 === true ? t('reception.yes') : t('reception.no')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.priorityBand')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.scheduling_band ?? t('reception.notRecorded')}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.schedulingPriorityScore')}:</span>{' '}
-                  {selectedFinancialProfile?.operational_status?.scheduling_priority_score != null
-                    ? String(selectedFinancialProfile.operational_status.scheduling_priority_score)
-                    : t('reception.notRecorded')}
-                </p>
+                <p><span className="text-slate-500">{t('reception.profileFields.name')}:</span> {selectedProfile?.name ?? selectedProfile?.patient_name ?? selectedPatient?.patient_name ?? selectedPatient?.name ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.recordNo')}:</span> {selectedPatient?.record_no ?? selectedProfile?.record_no ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.mobile')}:</span> {selectedProfile?.phone ?? selectedProfile?.mobile ?? selectedPatient?.mobile ?? selectedPatient?.mobile_canonical ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.internalId')}:</span> {formatFieldValue(selectedProfile?.id, 'progress')}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.firstVisitDate')}:</span> {formatFieldValue(selectedProfile?.first_visit_date, 'progress')}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.paymentType')}:</span> {getPaymentTypeLabel(selectedFinancialProfile?.financial_profile) ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.patientValueScore')}:</span> {selectedFinancialProfile?.financial_profile?.financial_value_score != null ? String(selectedFinancialProfile?.financial_profile?.financial_value_score) : NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.financialTier')}:</span> {selectedFinancialProfile?.financial_profile?.financial_tier ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.totalReceived')}:</span> {selectedFinancialProfile?.financial_profile?.lifetime_net_received != null ? formatCurrency(selectedFinancialProfile?.financial_profile?.lifetime_net_received, lng) : NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.lastPayment')}:</span> {selectedFinancialProfile?.financial_profile?.last_payment_date_raw ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.inFollowupQueue')}:</span> {selectedFinancialProfile?.operational_status?.in_followup_queue === true ? (t('reception.yes') || 'بله') : (t('reception.no') || 'خیر')}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.followupType')}:</span> {selectedFinancialProfile?.operational_status?.followup_action_type ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.inTop300')}:</span> {selectedFinancialProfile?.operational_status?.in_scheduling_top300 === true ? (t('reception.yes') || 'بله') : (t('reception.no') || 'خیر')}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.priorityBand')}:</span> {selectedFinancialProfile?.operational_status?.scheduling_band ?? NOT_RECORDED}</p>
+                <p><span className="text-slate-500">{t('reception.profileFields.schedulingPriorityScore')}:</span> {selectedFinancialProfile?.operational_status?.scheduling_priority_score != null ? String(selectedFinancialProfile?.operational_status?.scheduling_priority_score) : NOT_RECORDED}</p>
               </div>
             )}
           </div>
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs text-slate-500">{t('reception.service')}</label>
-              <select
-                value={service}
-                onChange={(e) => setService(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
-              >
-                <option value="">{t('reception.selectService')}</option>
-                {services.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-slate-500">
-                {t('reception.insurance')}
-                {insuranceLoading && <span className="ml-1 text-cyan-400">({t('loading')})</span>}
-                {insuranceError && <span className="ml-1 text-slate-500 text-[10px]">({insuranceError})</span>}
-              </label>
-              <select
-                value={insurance}
-                onChange={(e) => setInsurance(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
-              >
-                {insuranceOptions.map((opt) => (
-                  <option key={opt.id ?? opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-slate-500">{t('reception.preferredDay')}</label>
-              <select
-                value={preferredDay}
-                onChange={(e) => setPreferredDay(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
-              >
-                <option value="">{t('reception.aiDecision')}</option>
-                {DAYS_EN.map((d) => (
-                  <option key={d} value={d}>
-                    {t(`reception.days.${d}`)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button
-              onClick={handleRecommend}
-              disabled={loadingRec || !selectedPatient || !isNumericRecordNo(selectedPatient.record_no)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-500 py-2.5 text-sm font-medium text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-60"
-            >
-              {loadingRec ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t('loading')}
-                </>
-              ) : (
-                t('reception.getSlots')
-              )}
-            </button>
-          </div>
-          <div className="mt-4 max-h-72 space-y-2 overflow-y-auto">
-            {recommendations?.length === 0 && !loadingRec && (
-              <EmptyState title={t('reception.noSlots')} message={t('reception.tryDifferentFilters')} />
-            )}
-            {recommendations?.map((s, i) => (
-              <RecommendationCard key={s.slot_id ?? i} slot={s} onBook={(slot) => setSelectedSlot(slot)} />
-            ))}
-          </div>
-          {selectedSlot && (
-            <div className="mt-4 rounded-lg border border-slate-700 bg-slate-800/30 p-4">
-              <p className="mb-3 text-sm font-semibold text-slate-300">{t('reception.finalBooking')}</p>
-              <div className="space-y-1 text-xs text-slate-300">
-                <p>
-                  <span className="text-slate-500">{t('reception.patient')}:</span>{' '}
-                  {selectedProfile?.name ?? selectedProfile?.patient_name ?? '-'}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.profileFields.recordNo')}:</span>{' '}
-                  {selectedPatient?.record_no ?? '-'}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.serviceLabel')}:</span>{' '}
-                  {service || '-'}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.insurance')}:</span>{' '}
-                  {insuranceOptions.find((o) => o.value === insurance)?.label ?? insurance ?? '-'}
-                </p>
-                <p>
-                  <span className="text-slate-500">{t('reception.selectedSlot')}:</span>{' '}
-                  {selectedSlot?.slot_id ?? '-'}
-                </p>
-              </div>
-              <button
-                onClick={handleFinalBooking}
-                disabled={bookingLoading}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 py-2.5 text-sm font-medium text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-60"
-              >
-                {bookingLoading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {t('loading')}
-                  </>
-                ) : (
-                  t('reception.finalBooking')
-                )}
-              </button>
-              {bookingMessage && (
-                <p className="mt-2 text-xs text-slate-500">{bookingMessage}</p>
-              )}
-            </div>
-          )}
         </SectionCard>
       </div>
-
-      <SectionCard
-        title={t('reception.finalizedBookingsTitle') || 'نوبت‌های ثبت نهایی شده'}
-        subtitle={t('reception.finalizedBookingsSubtitle') || 'نوبت‌هایی که از طریق پیشنهاد هوش مصنوعی ثبت شده‌اند'}
-      >
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-800/80 text-start text-xs text-slate-500">
-              <tr>
-                <th className="px-4 py-3">{t('reception.patient')}</th>
-                <th className="px-4 py-3">{t('reception.recordNo')}</th>
-                <th className="px-4 py-3">{t('reception.doctor')}</th>
-                <th className="px-4 py-3">{t('reception.date')}</th>
-                <th className="px-4 py-3">{t('reception.time')}</th>
-                <th className="px-4 py-3">{t('reception.serviceLabel')}</th>
-                <th className="px-4 py-3">{t('reception.status')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {finalizedBookings.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
-                    {t('reception.noFinalizedBookings') || 'هنوز نوبتی ثبت نشده است'}
-                  </td>
-                </tr>
-              ) : (
-                finalizedBookings.map((b) => (
-                  <tr key={b.id} className="border-t border-slate-800 hover:bg-slate-800/30">
-                    <td className="px-4 py-2.5 text-slate-200">{b.patient_name ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.record_no ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.doctor_name ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.date ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.time ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{b.service ?? '-'}</td>
-                    <td className="px-4 py-2.5">
-                      <StatusBadge status={b.status ?? 'confirmed'} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
-
-      <SectionCard title={t('reception.todayAppointments')} subtitle={t('reception.todaySchedule')}>
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-800/80 text-start text-xs text-slate-500">
-              <tr>
-                <th className="px-4 py-3">{t('reception.time')}</th>
-                <th className="px-4 py-3">{t('reception.patient')}</th>
-                <th className="px-4 py-3">{t('reception.doctor')}</th>
-                <th className="px-4 py-3">{t('reception.service')}</th>
-                <th className="px-4 py-3">{t('reception.status')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {todayAppts.map((a) => (
-                <tr key={a.id} className="border-t border-slate-800 hover:bg-slate-800/30">
-                  <td className="px-4 py-2.5 text-slate-200">{a.time}</td>
-                  <td className="px-4 py-2.5 text-slate-200">{a.patient}</td>
-                  <td className="px-4 py-2.5 text-slate-400">{a.doctor}</td>
-                  <td className="px-4 py-2.5 text-slate-400">{a.service}</td>
-                  <td className="px-4 py-2.5">
-                    <StatusBadge status={a.status} />
-                  </td>
-                </tr>
+      <SectionCard title={t('reception.aiRecommendation')} subtitle={t('reception.aiRecommendationSubtitle')}>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">{t('reception.service')}</label>
+            <select
+              value={service}
+              onChange={(e) => setService(e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
+            >
+              <option value="">{t('reception.selectService')}</option>
+              {(services ?? []).map((s) => (
+                <option key={String(s ?? '')} value={s ?? ''}>{String(s ?? NOT_AVAILABLE)}</option>
               ))}
-            </tbody>
-          </table>
+              {((services ?? []).length === 0) && <option value="" disabled>{NOT_AVAILABLE}</option>}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">
+              {t('reception.insurance')}
+              {insuranceLoading && <span className="ml-1 text-slate-400">({LOADING})</span>}
+              {insuranceError && !insuranceLoading && <span className="ml-1 text-slate-500 text-[10px]">({insuranceError})</span>}
+            </label>
+            <select
+              value={insurance}
+              onChange={(e) => setInsurance(e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
+            >
+              <option value="CASH">نقد</option>
+              {(insurances ?? []).map((opt) => (
+                <option key={opt?.id ?? opt?.value ?? 'opt'} value={opt?.value ?? ''}>{opt?.label ?? opt?.value ?? NOT_AVAILABLE}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="mt-4">
+          <label className="mb-1 block text-xs text-slate-500">{t('reception.preferredDay')}</label>
+          <select
+            value={preferredDay}
+            onChange={(e) => setPreferredDay(e.target.value)}
+            className="w-full max-w-xs rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100"
+          >
+            <option value="">{t('reception.aiDecision')}</option>
+            {(DAYS_EN ?? []).map((d) => (
+              <option key={d ?? ''} value={d ?? ''}>{t(`reception.days.${d}`)}</option>
+            ))}
+          </select>
+        </div>
+        {selectedPatient && !canRecommend && (
+          <p className="mt-4 text-xs text-amber-400">{t('reception.invalidRecordNo') || 'لطفاً بیمار با شماره پرونده معتبر انتخاب کنید.'}</p>
+        )}
+        <button
+          onClick={handleRecommend}
+          disabled={loadingRec || !canRecommend}
+          className="mt-4 flex w-full max-w-xs items-center justify-center gap-2 rounded-lg bg-cyan-500 py-2.5 text-sm font-medium text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {loadingRec ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t('loading')}
+            </>
+          ) : (
+            t('reception.getSlots')
+          )}
+        </button>
+        <div className="mt-4 max-h-72 space-y-2 overflow-y-auto">
+          {slots.length === 0 && !loadingRec && (
+            <EmptyState title={t('reception.noSlots')} message={t('reception.tryDifferentFilters')} />
+          )}
+          {(slots ?? []).filter(Boolean).map((s, i) => (
+            <RecommendationCard
+              key={s?.slot_id ?? `slot-${i}`}
+              slot={safeSlot(s)}
+              onBook={() => {}}
+            />
+          ))}
         </div>
       </SectionCard>
     </div>
   )
 }
-
-
-
-
-
-
-

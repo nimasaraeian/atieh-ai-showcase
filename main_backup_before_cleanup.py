@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 API اصلی سیستم نوبت دهی کلینیک دندانپزشکی آتیه
-API-only backend. React frontend served at /app.
 """
 
 from dotenv import load_dotenv
@@ -16,10 +15,10 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Any
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, text, func
 from pydantic import BaseModel, Field
@@ -99,6 +98,89 @@ app.add_middleware(
 )
 
 # -----------------------------
+# Session Middleware & Auth
+# -----------------------------
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="atieh-ai-secret-key",
+)
+
+USERS = {
+    "admin": {"password": "atieh123", "role": "manager"},
+    "operator": {"password": "clinic123", "role": "operator"},
+}
+
+
+def _render_login_form(error: str | None = None, username: str | None = None) -> str:
+    error_html = (
+        f'<div style="color:#ff6b6b; margin-bottom:12px;">{error}</div>'
+        if error
+        else ""
+    )
+    username_value = username or ""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="fa" dir="rtl">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Atieh AI Login</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    </head>
+    <body style="margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#050816; color:#fff; display:flex; align-items:center; justify-content:center; min-height:100vh;">
+        <div style="background:rgba(15,23,42,0.96); border-radius:16px; padding:32px 28px; width:100%; max-width:360px; box-shadow:0 24px 60px rgba(15,23,42,0.9); border:1px solid rgba(148,163,184,0.25);">
+            <h1 style="margin:0 0 8px; font-size:22px;">ورود به داشبورد آتیه</h1>
+            <p style="margin:0 0 20px; font-size:13px; color:#9ca3af;">لطفاً نام کاربری و رمز عبور خود را وارد کنید.</p>
+            {error_html}
+            <form method="post" action="/login">
+                <div style="margin-bottom:12px;">
+                    <label for="username" style="display:block; margin-bottom:4px; font-size:13px;">نام کاربری</label>
+                    <input id="username" name="username" value="{username_value}" required style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(148,163,184,0.45); background:rgba(15,23,42,0.85); color:#e5e7eb; font-size:13px; box-sizing:border-box; outline:none;" />
+                </div>
+                <div style="margin-bottom:18px;">
+                    <label for="password" style="display:block; margin-bottom:4px; font-size:13px;">رمز عبور</label>
+                    <input id="password" type="password" name="password" required style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(148,163,184,0.45); background:rgba(15,23,42,0.85); color:#e5e7eb; font-size:13px; box-sizing:border-box; outline:none;" />
+                </div>
+                <button type="submit" style="width:100%; padding:10px 12px; border-radius:999px; border:none; background:linear-gradient(135deg,#22c55e,#0ea5e9); color:#0b1120; font-weight:600; font-size:14px; cursor:pointer;">
+                    ورود
+                </button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_get(request: Request):
+    """نمایش فرم ورود ساده برای داشبورد."""
+    if request.session.get("user"):
+        return RedirectResponse(url="/", status_code=302)
+    return HTMLResponse(content=_render_login_form())
+
+
+@app.post("/login")
+async def login_post(request: Request, username: str = Form(...), password: str = Form(...)):
+    """اعتبارسنجی ورود و ایجاد سشن."""
+    user = USERS.get(username)
+    if not user or user["password"] != password:
+        html = _render_login_form(
+            error="نام کاربری یا رمز عبور نادرست است.",
+            username=username,
+        )
+        return HTMLResponse(content=html, status_code=401)
+
+    request.session["user"] = {"username": username, "role": user["role"]}
+    return RedirectResponse(url="/", status_code=302)
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    """خروج کاربر و پاک کردن سشن."""
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=302)
+
+
+# -----------------------------
 # Lightweight SQLite helper (for simple read-only endpoints)
 # -----------------------------
 DB_PATH = "atieh_clinic.db"
@@ -143,37 +225,58 @@ def get_crm_client_dependency():
 
 
 # -----------------------------
-# React frontend & public assets
+# Static & Public Files
 # -----------------------------
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+
+    @app.get("/")
+    async def read_root(request: Request):
+        """صفحه اصلی رابط کاربری (محافظت‌شده با سشن)."""
+        if not request.session.get("user"):
+            return RedirectResponse(url="/login", status_code=302)
+        return FileResponse(
+            os.path.join(static_dir, "index.html"),
+            media_type="text/html"
+        )
+
 public_dir = os.path.join(os.path.dirname(__file__), "public")
 if os.path.exists(public_dir):
     app.mount("/public", StaticFiles(directory=public_dir), name="public")
 
-# React UI (Atieh AI: receptionist, doctor, manager) - expects frontend/dist from `npm run build`
+# New React UI (Atieh AI panels: receptionist, doctor, manager)
 _react_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-_react_assets = os.path.join(_react_dist, "assets")
 if os.path.exists(_react_dist):
-    if os.path.exists(_react_assets):
-        app.mount("/app/assets", StaticFiles(directory=_react_assets), name="react_assets")
+    app.mount("/app/assets", StaticFiles(directory=os.path.join(_react_dist, "assets")), name="react_assets")
+
     @app.get("/app")
     @app.get("/app/{full_path:path}")
     async def react_app(full_path: str = ""):
         """Serve React SPA - index.html for all /app routes (client-side routing)."""
         return FileResponse(os.path.join(_react_dist, "index.html"), media_type="text/html")
 
-# -----------------------------
-# Root & Health
-# -----------------------------
-@app.get("/")
-def root():
-    """API root - links to docs and React app."""
-    return {
-        "service": "Atieh AI",
-        "api": "/api",
-        "docs": "/docs",
-        "app": "/app",
-    }
+# Manager dashboard page (standalone HTML)
 
+
+
+@app.get("/staff/search")
+async def staff_search_page(request: Request):
+    """Staff patient search page – serves main SPA on patient search route."""
+    if not request.session.get("user"):
+        return RedirectResponse(url="/login", status_code=302)
+    return RedirectResponse(url="/#/patients", status_code=302)
+
+
+# -----------------------------
+# CORS
+# -----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # =============================
 # Health Check (used by launcher to detect API readiness)
 # =============================

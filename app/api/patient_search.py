@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Global patient search API – searches across full patient dataset.
+Global patient search API – searches canonical mapped identity layer.
 
 Endpoint:
   GET /patients/search?q=<query>&limit=50&offset=0
 
-Sources:
-  - v_financial_identity_profile (record_no + name + mobile + financial data)
-  - patients + patient_recordno_map (patients without financial profile)
-  - appointment_recordno_bridge (record_nos from appointment files)
+Canonical source: patient_recordno_map + record_no_patient_map.
+These tables have record_no, patient_name_norm, phone_norm (real data, no UNKNOWN).
+v_receptionist_search reads from mapping tables, NOT from v_financial_identity_profile or patients.
 
-Enrichment: in_top300, in_followup_queue from operational views.
+Fallback (if view missing): direct query on patient_recordno_map / record_no_patient_map.
 """
 import os
 import sqlite3
@@ -34,33 +33,27 @@ def _get_conn():
     return conn
 
 
-def _normalize_persian_text(s: str) -> str:
-    """
-    Normalize Persian/Arabic text for more robust search.
+def _table_exists(conn, name: str) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name=? LIMIT 1", (name,))
+    return cur.fetchone() is not None
 
-    - Trim leading/trailing whitespace
-    - Replace Arabic ي / ك with Persian ی / ک
-    - Replace half‑space (ZWNJ) with normal space
-    - Collapse multiple spaces into a single space
-    """
+
+def _normalize_persian_text(s: str) -> str:
+    """Normalize Persian/Arabic text for robust search."""
     if not s:
         return ""
-
-    # Normalize common Arabic codepoints to Persian forms
     s = (
-        s.replace("\u064a", "ی")  # ARABIC LETTER YEH -> PERSIAN YEH
-        .replace("\u0643", "ک")  # ARABIC LETTER KAF -> PERSIAN KEHEH
-        .replace("\u200c", " ")  # ZERO WIDTH NON-JOINER (half-space) -> normal space
+        s.replace("\u064a", "ی")
+        .replace("\u0643", "ک")
+        .replace("\u200c", " ")
     )
-
-    # Normalize whitespace
     s = s.strip()
     s = re.sub(r"\s+", " ", s)
     return s
 
 
 def _extract_digits(s: str) -> str:
-    """Extract digits from string (ASCII + Persian) for numeric search."""
     fa_to_en = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
     t = (s or "").translate(fa_to_en)
     return "".join(c for c in t if c.isdigit())
@@ -68,170 +61,137 @@ def _extract_digits(s: str) -> str:
 
 def search_patients(q: Optional[str], limit: int = 50, offset: int = 0) -> Dict[str, Any]:
     """
-    Global patient search: v_financial_identity_profile + patients fallback.
-    Returns: { count, data: [ { record_no, patient_name, mobile, financial_tier,
-              lifetime_net_received, last_payment_date_raw, in_top300, in_followup_queue } ] }
+    Receptionist-safe patient search.
+    Returns only rows with valid record_no (exist in mapping tables).
+    Prioritizes rows with real mobile.
     """
-    raw_q = (q or "")
-    # Persian-friendly normalization for order-insensitive name search
+    raw_q = (q or "").strip()
     q_norm = _normalize_persian_text(raw_q)
-
     if not q_norm:
         return {"count": 0, "data": []}
 
-    # Tokenize the normalized query for order-insensitive name search
-    # Example: "رضایی علیرضا" vs "علیرضا رضایی"
-    # Filter tokens with length >= 2 to avoid single-char noise (e.g. "ا" matching too broadly)
     raw_tokens: List[str] = [t.strip() for t in q_norm.split(" ") if t and t.strip()]
     name_tokens: List[str] = [t for t in raw_tokens if len(t) >= 2]
+    like = f"%{q_norm}%"
+    q_digits = _extract_digits(q_norm)
+    mobile_like = f"%{q_digits[-10:] if len(q_digits) >= 7 else q_digits}%" if len(q_digits) >= 5 else "%"
 
     conn = _get_conn()
     try:
         cur = conn.cursor()
         rows: List[Dict[str, Any]] = []
         seen_record_no: set = set()
-        seen_patient_key: set = set()
 
-        # 1) Search v_financial_identity_profile (main source - 128K identities with financial data)
-        like = f"%{q_norm}%"
-        q_digits = _extract_digits(q_norm)
-        mobile_like = f"%{q_digits[-10:] if len(q_digits) >= 7 else q_digits}%" if len(q_digits) >= 5 else "%"
-
-        try:
-            where_parts = []
-            params: List[Any] = []
-
-            # Numeric / record_no / mobile search (unchanged)
+        def build_where(prefix: str) -> tuple:
+            """prefix: '' for patient_name/mobile, '_canonical' for patient_name_canonical/mobile_canonical."""
+            w, p = [], []
             if q_digits:
-                where_parts.append("record_no LIKE ?")
-                params.append(f"%{q_digits}%")
+                w.append("record_no LIKE ?")
+                p.append(f"%{q_digits}%")
                 if len(q_digits) >= 5:
-                    where_parts.append(
-                        "REPLACE(REPLACE(REPLACE(COALESCE(mobile_canonical,''),' ',''),'-',''),'۰','0') LIKE ?"
+                    w.append(
+                        "REPLACE(REPLACE(REPLACE(COALESCE(mobile" + (f"_canonical" if prefix else "") + ",''),' ',''),'-',''),'۰','0') LIKE ?"
                     )
-                    params.append(mobile_like)
-
-            # Name search: all tokens must match somewhere in patient_name_canonical (order-insensitive)
+                    p.append(mobile_like)
             if name_tokens:
-                token_clauses = []
-                for token in name_tokens:
-                    token_clauses.append("patient_name_canonical LIKE ?")
-                    params.append(f"%{token}%")
-                # All tokens must be present somewhere in the normalized name (order-insensitive)
-                where_parts.append("(" + " AND ".join(token_clauses) + ")")
+                col = "patient_name" + prefix
+                token_clauses = [f"{col} LIKE ?" for _ in name_tokens]
+                w.append("(" + " AND ".join(token_clauses) + ")")
+                p.extend([f"%{t}%" for t in name_tokens])
             else:
-                # Fallback: simple substring match on normalized name
-                where_parts.append("patient_name_canonical LIKE ?")
-                params.append(like)
+                w.append("patient_name" + prefix + " LIKE ?")
+                p.append(like)
+            w.append("mobile" + prefix + " LIKE ?")
+            p.append(like)
+            return w, p
 
-            # Fallback mobile LIKE with original query text
-            where_parts.append("mobile_canonical LIKE ?")
-            params.append(like)
+        where_receptionist, params_receptionist = build_where("")
+        order_params = [q_norm, f"{q_norm}%", f"{q_norm}%"]
 
-            where_sql = " OR ".join(where_parts)
-
-            sql = f"""
-                SELECT
-                    record_no,
-                    patient_name_canonical AS patient_name,
-                    mobile_canonical AS mobile,
-                    financial_tier,
-                    lifetime_net_received,
-                    last_payment_date_raw
-                FROM v_financial_identity_profile
-                WHERE {where_sql}
-                ORDER BY
-                    CASE WHEN record_no = ? THEN 0
-                         WHEN record_no LIKE ? THEN 1
-                         WHEN patient_name_canonical LIKE ? THEN 2
-                         ELSE 3 END,
-                    COALESCE(lifetime_net_received, 0) DESC
-                LIMIT ? OFFSET ?
-            """
-            params.extend(
-                [
-                    q_norm,
-                    f"{q_norm}%",
-                    f"{q_norm}%",
-                    limit * 2,
-                    offset,
-                ]
-            )
-
-            cur.execute(sql, params)
-            for r in cur.fetchall():
-                d = dict(r)
-                rn = d.get("record_no")
-                if rn and rn not in seen_record_no:
-                    seen_record_no.add(rn)
-                    rows.append(d)
-        except sqlite3.OperationalError as e:
-            logger.warning("v_financial_identity_profile search: %s", e)
-
-        # 2) Fallback: patients + patient_recordno_map (patients not in financial profile)
-        if len(rows) < limit and q_norm:
+        # 1) Prefer v_receptionist_search (only selectable rows)
+        use_receptionist_view = _table_exists(conn, "v_receptionist_search")
+        if use_receptionist_view:
             try:
-                # Build an order-insensitive token-based name search for patients.name
-                name_where_clauses: List[str] = []
-                name_params: List[Any] = []
-
-                if name_tokens:
-                    # Require all tokens to be present in the (non-canonical) name (AND of LIKEs)
-                    name_where_clauses.append(
-                        "(" + " AND ".join(["p.name LIKE ?"] * len(name_tokens)) + ")"
-                    )
-                    name_params.extend([f"%{token}%" for token in name_tokens])
-                else:
-                    name_where_clauses.append("p.name LIKE ?")
-                    name_params.append(like)
-
-                # Also allow phone substring search (use original LIKE pattern)
-                name_where_clauses.append("p.phone LIKE ?")
-                name_params.append(like)
-
-                where_sql = " OR ".join(name_where_clauses)
-
-                sql = f"""
-                    SELECT
-                        prm.record_no,
-                        p.name AS patient_name,
-                        COALESCE(prm.phone_norm, p.phone) AS mobile
-                    FROM patients p
-                    LEFT JOIN patient_recordno_map prm ON prm.patient_id = p.id
-                    WHERE {where_sql}
-                    ORDER BY p.id DESC
-                    LIMIT ?
-                """
-                params = name_params + [limit - len(rows) + 50]
-
-                cur.execute(sql, params)
+                cur.execute(
+                    f"""
+                    SELECT record_no, patient_name, mobile, financial_tier, lifetime_net_received, last_payment_date_raw
+                    FROM v_receptionist_search
+                    WHERE {" OR ".join(where_receptionist)}
+                    ORDER BY
+                        CASE WHEN record_no = ? THEN 0 WHEN record_no LIKE ? THEN 1 WHEN patient_name LIKE ? THEN 2 ELSE 3 END,
+                        has_real_mobile DESC,
+                        COALESCE(lifetime_net_received, 0) DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    params_receptionist + order_params + [limit * 2, offset],
+                )
                 for r in cur.fetchall():
                     d = dict(r)
-                    rn = (d.get("record_no") or "").strip() if d.get("record_no") else ""
-
-                    # FIX: record_no must be numeric only
-                    if not rn.isdigit():
-                        rn = None
-
-                    if rn and rn in seen_record_no:
-                        continue
-                    pk = f"{d.get('patient_name','')}|{d.get('mobile','')}"
-                    if pk in seen_patient_key:
-                        continue
-                    if rn:
+                    rn = (d.get("record_no") or "").strip()
+                    if rn and rn not in seen_record_no:
                         seen_record_no.add(rn)
-                    seen_patient_key.add(pk)
-                    d["record_no"] = rn or None
-                    d["financial_tier"] = None
-                    d["lifetime_net_received"] = None
-                    d["last_payment_date_raw"] = None
+                        rows.append(d)
+                        if len(rows) >= limit:
+                            break
+            except sqlite3.OperationalError as e:
+                logger.warning("v_receptionist_search: %s", e)
+                use_receptionist_view = False
+
+        # 2) Fallback: patient_recordno_map directly (when view missing or needs more rows)
+        if len(rows) < limit:
+            try:
+                w_prm = []
+                p_prm: List[Any] = []
+                if q_digits:
+                    w_prm.append("prm.record_no LIKE ?")
+                    p_prm.append(f"%{q_digits}%")
+                    if len(q_digits) >= 5:
+                        w_prm.append(
+                            "REPLACE(REPLACE(COALESCE(prm.phone_norm,''),' ',''),'-','') LIKE ?"
+                        )
+                        p_prm.append(mobile_like)
+                if name_tokens:
+                    w_prm.append(
+                        "(" + " AND ".join(["prm.patient_name_norm LIKE ?"] * len(name_tokens)) + ")"
+                    )
+                    p_prm.extend([f"%{t}%" for t in name_tokens])
+                else:
+                    w_prm.append("prm.patient_name_norm LIKE ?")
+                    p_prm.append(like)
+                w_prm.append("(prm.patient_name_norm LIKE ? OR prm.phone_norm LIKE ?)")
+                p_prm.extend([like, like])
+
+                cur.execute(
+                    f"""
+                    SELECT prm.record_no, prm.patient_name_norm AS patient_name, prm.phone_norm AS mobile,
+                           fif.financial_tier, fif.lifetime_net_received, fif.last_payment_date_raw
+                    FROM patient_recordno_map prm
+                    LEFT JOIN financial_identity_profile fif ON fif.record_no = prm.record_no
+                    WHERE {" OR ".join(w_prm)}
+                      AND prm.record_no IS NOT NULL AND TRIM(prm.record_no) <> ''
+                      AND prm.record_no <> '-' AND prm.record_no GLOB '[0-9]*'
+                    ORDER BY
+                      CASE WHEN prm.record_no = ? THEN 0 WHEN prm.record_no LIKE ? THEN 1
+                           WHEN prm.patient_name_norm LIKE ? THEN 2 ELSE 3 END,
+                      CASE WHEN prm.phone_norm NOT LIKE 'UNKNOWN%' AND prm.phone_norm IS NOT NULL THEN 1 ELSE 0 END DESC,
+                      COALESCE(fif.lifetime_net_received, 0) DESC
+                    LIMIT ?
+                    """,
+                    p_prm + order_params + [limit - len(rows) + 50],
+                )
+                for r in cur.fetchall():
+                    d = dict(r)
+                    rn = (d.get("record_no") or "").strip()
+                    if not rn or rn in seen_record_no:
+                        continue
+                    seen_record_no.add(rn)
                     rows.append(d)
                     if len(rows) >= limit:
                         break
             except sqlite3.OperationalError as ex:
-                logger.debug("patients fallback: %s", ex)
+                logger.debug("patient_recordno_map fallback: %s", ex)
 
-        # 3) Enrich with in_top300, in_followup_queue
+        # Enrich with in_top300, in_followup_queue
         for row in rows:
             rn = row.get("record_no")
             row["in_top300"] = False

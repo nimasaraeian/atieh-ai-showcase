@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  base: '/app/',  // Required for backend serving at /app; assets at /app/assets/
 
   server: {
     port: 5175,
