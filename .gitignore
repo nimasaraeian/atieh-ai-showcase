@@ -70,3 +70,13 @@ archive/debug-output/
 
 
 
+
+backups/
+*.db-shm
+*.db-wal
+atieh_clinic_recovery81_test.db
+
+backups/
+*.db-shm
+*.db-wal
+atieh_clinic_recovery81_test.db
