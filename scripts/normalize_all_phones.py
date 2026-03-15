@@ -20,6 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine.phone_engine import process
+from engine.phone_multi_extractor import extract_phone_candidates
+from engine.phone_normalizer import normalize_number
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +70,13 @@ SOURCES = [
     ("appointment_recordno_bridge", "id", "phone_raw"),
 ]
 
+# Tables that use multi-phone extraction (split by / , - space ; |)
+MULTI_PHONE_SOURCES = {"stg_payments", "appointment_recordno_bridge"}
+
+# Confidence for multi-extracted numbers
+MULTI_CONF_MOBILE = 0.9
+MULTI_CONF_LANDLINE = 0.85
+
 
 def run_pipeline(db_path: Path) -> None:
     conn = sqlite3.connect(db_path, timeout=30)
@@ -83,6 +92,36 @@ def run_pipeline(db_path: Path) -> None:
     mobile_detected = 0
     landline_detected = 0
     invalid_numbers = 0
+    multi_phone_logged = False
+
+    def _insert_row(st, rid, raw_ph, prim_mob, sec_mob, land, all_c, norm_c, conf, sts, ptype):
+        cols = (
+            "source_table", "source_row_id", "raw_phone",
+            "primary_mobile", "secondary_mobile", "landline",
+            "all_candidates", "normalized_candidates",
+            "confidence_score", "status", "phone_type", "notes"
+        )
+        placeholders = ", ".join("?" * len(cols))
+        try:
+            conn.execute(
+                f"INSERT INTO phone_candidates ({','.join(cols)}) VALUES ({placeholders})",
+                (st, rid, raw_ph, prim_mob, sec_mob, land, all_c, norm_c, conf, sts, ptype, None),
+            )
+        except sqlite3.OperationalError as e:
+            if "no such column: landline" in str(e).lower():
+                conn.execute(
+                    """
+                    INSERT INTO phone_candidates (
+                        source_table, source_row_id, raw_phone,
+                        primary_mobile, secondary_mobile,
+                        all_candidates, normalized_candidates,
+                        confidence_score, status, phone_type, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (st, rid, raw_ph, prim_mob, sec_mob, all_c, norm_c, conf, sts, ptype, None),
+                )
+            else:
+                raise
 
     for source_table, id_col, phone_col in SOURCES:
         try:
@@ -92,10 +131,41 @@ def run_pipeline(db_path: Path) -> None:
             continue
 
         rows = cur.fetchall()
+        use_multi = source_table in MULTI_PHONE_SOURCES
+        if use_multi and not multi_phone_logged:
+            print("multi-phone extraction enabled")
+            multi_phone_logged = True
+
         for row in rows:
             row_id = row[id_col]
             raw = str(row[phone_col] or "").strip()
             rows_processed += 1
+
+            if use_multi and raw:
+                candidates = extract_phone_candidates(raw)
+                if candidates:
+                    for digits in candidates:
+                        canon, ptype = normalize_number(digits)
+                        if not canon or ptype == "invalid":
+                            continue
+                        mobile_types = {"mobile", "mobile_missing_zero", "mobile_international"}
+                        is_mobile = ptype in mobile_types
+                        conf = MULTI_CONF_MOBILE if is_mobile else MULTI_CONF_LANDLINE
+                        prim = canon if is_mobile else None
+                        land = canon if not is_mobile else None
+                        phones_extracted += 1
+                        if is_mobile:
+                            mobile_detected += 1
+                        else:
+                            landline_detected += 1
+                        all_cands = json.dumps([digits], ensure_ascii=False)
+                        norm_str = f"{canon}({ptype})"
+                        _insert_row(
+                            source_table, row_id, raw, prim, None, land,
+                            all_cands, norm_str, conf, "multi_extracted",
+                            "mobile" if is_mobile else "landline",
+                        )
+                    continue
 
             result = process(raw)
             norm = result["normalized_candidates"]
@@ -111,45 +181,12 @@ def run_pipeline(db_path: Path) -> None:
             all_cands = json.dumps(result["all_candidates"], ensure_ascii=False)
             norm_str = ";".join(f"{c}({t})" for c, t in norm) if norm else ""
 
-            cols = (
-                "source_table", "source_row_id", "raw_phone",
-                "primary_mobile", "secondary_mobile", "landline",
-                "all_candidates", "normalized_candidates",
-                "confidence_score", "status", "phone_type", "notes"
+            _insert_row(
+                source_table, row_id, result["raw_phone"] or None,
+                result["primary_mobile"], result["secondary_mobile"], result["landline"],
+                all_cands, norm_str,
+                result["confidence_score"], result["status"], result["phone_type"],
             )
-            placeholders = ", ".join("?" * len(cols))
-            try:
-                conn.execute(
-                    f"INSERT INTO phone_candidates ({','.join(cols)}) VALUES ({placeholders})",
-                    (
-                        source_table, row_id, result["raw_phone"] or None,
-                        result["primary_mobile"], result["secondary_mobile"], result["landline"],
-                        all_cands, norm_str,
-                        result["confidence_score"], result["status"], result["phone_type"],
-                        None,
-                    ),
-                )
-            except sqlite3.OperationalError as e:
-                if "no such column: landline" in str(e).lower():
-                    conn.execute(
-                        """
-                        INSERT INTO phone_candidates (
-                            source_table, source_row_id, raw_phone,
-                            primary_mobile, secondary_mobile,
-                            all_candidates, normalized_candidates,
-                            confidence_score, status, phone_type, notes
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            source_table, row_id, result["raw_phone"] or None,
-                            result["primary_mobile"], result["secondary_mobile"],
-                            all_cands, norm_str,
-                            result["confidence_score"], result["status"], result["phone_type"],
-                            None,
-                        ),
-                    )
-                else:
-                    raise
 
         logger.info("Processed %s: %d rows", source_table, len(rows))
 

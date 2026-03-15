@@ -42,9 +42,12 @@ def recommend_slot(payload: dict = Body(...)):
 
         db_payload = {
             "record_no": payload.get("record_no"),
+            "crm_patient_code": payload.get("crm_patient_code"),
             "service": payload.get("service"),
             "insurance": payload.get("insurance"),
             "preferred_day": preferred_day,
+            "doctor": payload.get("doctor"),
+            "doctor_id": payload.get("doctor_id"),
         }
 
         logger.info("recommend-slot raw payload=%r", payload)

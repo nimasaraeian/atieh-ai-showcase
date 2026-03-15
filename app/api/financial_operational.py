@@ -20,9 +20,12 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# Prefer atieh_clinic_working.db (operational pipeline output); fallback to atieh_clinic.db
+# FINANCIAL_DB_PATH env overrides. Otherwise: atieh_clinic_recovery81_test.db if present,
+# then atieh_clinic_working.db, else atieh_clinic.db
 DB_PATH = os.environ.get("FINANCIAL_DB_PATH") or (
-    "atieh_clinic_working.db"
+    "atieh_clinic_recovery81_test.db"
+    if os.path.exists("atieh_clinic_recovery81_test.db")
+    else "atieh_clinic_working.db"
     if os.path.exists("atieh_clinic_working.db")
     else "atieh_clinic.db"
 )
@@ -592,58 +595,168 @@ SELECT
 
 
 
+def _resolve_record_no_to_patient_id(conn, record_no: str) -> Optional[int]:
+    """Resolve record_no to patient_id via mapping tables. Returns None if not found."""
+    cur = conn.cursor()
+    for tbl in ("record_no_patient_map", "patient_record_map", "patient_recordno_map"):
+        try:
+            cur.execute(
+                f"SELECT patient_id FROM {tbl} WHERE record_no = ? AND patient_id IS NOT NULL LIMIT 1",
+                (str(record_no).strip(),),
+            )
+            row = cur.fetchone()
+            if row:
+                return row[0]
+        except sqlite3.OperationalError:
+            continue
+    return None
+
+
+def _get_payments_clean_rows(conn, record_no: str, patient_id: Optional[int] = None) -> list:
+    """
+    Fetch payments_clean rows for the target patient.
+
+    When patient_id is resolved from record_no, query by patient_id to get the complete
+    payment set (patient can have payments with multiple record_nos).
+    Otherwise fall back to record_no only.
+    """
+    cur = conn.cursor()
+    cols = ["net_received", "amount_patient", "amount_insurer", "appointment_date_raw", "loaded_at", "payer_source_norm", "insurer_raw", "insurer_name_norm"]
+    try:
+        if patient_id is not None:
+            cur.execute(
+                """
+                SELECT
+                    net_received, amount_patient, amount_insurer,
+                    appointment_date_raw, loaded_at,
+                    payer_source_norm, insurer_raw, insurer_name_norm
+                FROM payments_clean
+                WHERE patient_id = ?
+                """,
+                (patient_id,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT
+                    net_received, amount_patient, amount_insurer,
+                    appointment_date_raw, loaded_at,
+                    payer_source_norm, insurer_raw, insurer_name_norm
+                FROM payments_clean
+                WHERE record_no = ? AND record_no IS NOT NULL AND TRIM(record_no) <> ''
+                """,
+                (str(record_no).strip(),),
+            )
+        rows = cur.fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
 @router.get("/patient/{record_no}")
 def get_financial_patient_detail(record_no: str):
     """
     Return financial and operational detail for a single financial identity.
+
+    Uses the financial interpretation layer:
+    - amount_unit_detected: "rial"
+    - net_received_rial / net_received_toman
+    - amount_patient / amount_insurer (rial and toman)
+    - payment_row_count, positive_row_count, negative_row_count
+    - normalized_insurer_list, dominant_insurer
+    - financial_confidence_note
+
+    Falls back to payments_clean when financial_identity_profile is missing.
     """
+    from app.financial import compute_financial_interpretation, to_profile_dict
+
     conn = get_financial_db()
     try:
         cur = conn.cursor()
+        rn = str(record_no).strip()
+        if not rn:
+            raise HTTPException(status_code=400, detail="record_no required")
 
-        cur.execute(
-            """
-            SELECT
-                record_no,
-                financial_tier,
-                financial_value_score,
-                lifetime_txn_count,
-                lifetime_net_received,
-                lifetime_patient_paid,
-                lifetime_insurer_paid,
-                lifetime_negative_net,
-                lifetime_negative_txn_count,
-                first_payment_date_raw,
-                last_payment_date_raw,
-                cash_txn_count,
-                insurance_txn_count,
-                recent_txn_count,
-                recent_net_received,
-                has_date_range
-            FROM financial_identity_profile
-            WHERE record_no = ?
-            """,
-            (record_no,),
-        )
-        row = cur.fetchone()
+        # 1) Resolve record_no -> patient_id; use patient_id for complete payment set
+        patient_id = _resolve_record_no_to_patient_id(conn, rn)
+        payment_rows = _get_payments_clean_rows(conn, rn, patient_id)
+        if not payment_rows:
+            if patient_id is None:
+                raise HTTPException(status_code=404, detail=f"record_no not found: {record_no}")
+            # patient_id resolved but no payments – return empty profile
 
-        if not row:
-            raise HTTPException(status_code=404, detail=f"record_no not found: {record_no}")
+        interp = compute_financial_interpretation(payment_rows, rn)
+        profile = to_profile_dict(interp)
 
-        profile = dict(row)
+        # 2) Overlay from financial_identity_profile if available
+        try:
+            cur.execute(
+                """
+                SELECT
+                    financial_tier, financial_value_score,
+                    lifetime_txn_count, lifetime_net_received,
+                    cash_txn_count, insurance_txn_count,
+                    last_payment_date_raw
+                FROM financial_identity_profile
+                WHERE record_no = ?
+                """,
+                (rn,),
+            )
+            fif_row = cur.fetchone()
+            if fif_row:
+                profile["financial_tier"] = fif_row[0]
+                profile["financial_value_score"] = fif_row[1]
+                if fif_row[2] is not None:
+                    profile["lifetime_txn_count"] = fif_row[2]
+                if fif_row[3] is not None:
+                    profile["lifetime_net_received"] = round(fif_row[3] / 10.0, 0)
+                if fif_row[5] is not None:
+                    profile["cash_txn_count"] = fif_row[5]
+                if fif_row[6] is not None:
+                    profile["insurance_txn_count"] = fif_row[6]
+                if fif_row[7]:
+                    profile["last_payment_date_raw"] = fif_row[7]
+        except sqlite3.OperationalError:
+            pass
 
-        # Follow-up membership
+        # 3) Fallback: patient_financial_summary for score when financial_identity_profile missing
+        if profile.get("financial_value_score") is None:
+            try:
+                cur.execute(
+                    "SELECT financial_value_score, cash_txn_count, insurance_txn_count, last_payment_date_raw FROM patient_financial_summary WHERE record_no = ?",
+                    (rn,),
+                )
+                pfs_row = cur.fetchone()
+                if pfs_row:
+                    profile["financial_value_score"] = pfs_row[0]
+                    if pfs_row[1] is not None:
+                        profile["cash_txn_count"] = pfs_row[1]
+                    if pfs_row[2] is not None:
+                        profile["insurance_txn_count"] = pfs_row[2]
+                    if pfs_row[3]:
+                        profile["last_payment_date_raw"] = pfs_row[3]
+            except sqlite3.OperationalError:
+                pass
+
+        # 4) Derive simple tier from score when missing
+        if profile.get("financial_tier") is None and profile.get("financial_value_score") is not None:
+            s = profile["financial_value_score"]
+            if s >= 0.90:
+                profile["financial_tier"] = "VIP"
+            elif s >= 0.75:
+                profile["financial_tier"] = "HIGH"
+            elif s >= 0.55:
+                profile["financial_tier"] = "MEDIUM"
+            else:
+                profile["financial_tier"] = "LOW"
+
+        # 5) Follow-up and scheduling membership (views may not exist in all DBs)
         in_followup_queue = False
         followup_action_type = None
         try:
             cur.execute(
-                """
-                SELECT action_type
-                FROM v_financial_followup_queue_contactable
-                WHERE record_no = ?
-                LIMIT 1
-                """,
-                (record_no,),
+                "SELECT action_type FROM v_financial_followup_queue_contactable WHERE record_no = ? LIMIT 1",
+                (rn,),
             )
             f_row = cur.fetchone()
             if f_row:
@@ -652,19 +765,13 @@ def get_financial_patient_detail(record_no: str):
         except sqlite3.OperationalError:
             pass
 
-        # Scheduling membership
         in_scheduling_top300 = False
         scheduling_band = None
         scheduling_priority_score = None
         try:
             cur.execute(
-                """
-                SELECT scheduling_band, scheduling_priority_score
-                FROM v_financial_scheduling_queue_top300
-                WHERE record_no = ?
-                LIMIT 1
-                """,
-                (record_no,),
+                "SELECT scheduling_band, scheduling_priority_score FROM v_financial_scheduling_queue_top300 WHERE record_no = ? LIMIT 1",
+                (rn,),
             )
             s_row = cur.fetchone()
             if s_row:
@@ -675,7 +782,7 @@ def get_financial_patient_detail(record_no: str):
             pass
 
         return {
-            "record_no": record_no,
+            "record_no": rn,
             "financial_profile": profile,
             "operational_status": {
                 "in_followup_queue": in_followup_queue,

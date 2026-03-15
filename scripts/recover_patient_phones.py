@@ -32,11 +32,10 @@ MILESTONE_APPOINTMENT_EXACT = 65.0
 MILESTONE_LAST8_SAFE = 80.0
 MILESTONE_TARGET = 90.0
 
-# Last8 safe thresholds: only match when cnt <= MAX_LAST8_COLLISION
-# Reduce to 1 if phase_last8_safe hangs (unique-only = fastest).
-MAX_LAST8_COLLISION_PAYMENTS = 2
-MAX_LAST8_COLLISION_PATIENTS = 2
-MAX_LAST8_COLLISION_APPOINTMENTS = 2
+# Last8 safe: low-collision-safe (cnt <= threshold)
+LAST8_SAFE_MAX_PAYMENTS = 2
+LAST8_SAFE_MAX_PATIENTS = 2
+LAST8_SAFE_MAX_APPOINTMENTS = 2
 
 # Source ranking for tie-break (higher = better)
 SOURCE_RANK = {
@@ -48,6 +47,8 @@ SOURCE_RANK = {
     "payments:exact_name": 4,
     "appointment_bridge:phone_last8_safe": 3,
     "payments:phone_last8_safe": 2,
+    "appointment_bridge:exact_phone_repaired": 2,
+    "payments:exact_phone_repaired": 2,
     "patients_direct:direct_phone": 1,
 }
 
@@ -78,6 +79,23 @@ def normalize_phone_canonical(raw: str) -> str:
 
 def phone_to_last8(digits: str) -> str:
     return digits[-8:] if len(digits) >= 8 else ""
+
+
+def repair_phone_variants(digits: str) -> list:
+    """
+    Generate repair variants for matching.
+    Rule: if len=10 and starts with 9, add variant "0"+digits.
+    Original is preserved; no duplication.
+    """
+    if not digits or not isinstance(digits, str):
+        return []
+    d = "".join(c for c in str(digits) if c.isdigit())
+    out = [d]
+    if len(d) == 10 and d.startswith("9"):
+        v = "0" + d
+        if v not in out:
+            out.append(v)
+    return out
 
 
 def ensure_index(conn: sqlite3.Connection, idx_sql: str, name: str = "") -> None:
@@ -224,7 +242,8 @@ def phase_lookup(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE IF EXISTS appointment_phone_helper")
         conn.execute("""
             CREATE TABLE appointment_phone_helper (
-                arb_id INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                arb_id INTEGER NOT NULL,
                 appointment_phone_norm TEXT,
                 appointment_phone_last7 TEXT,
                 appointment_phone_last8 TEXT,
@@ -247,6 +266,7 @@ def phase_lookup(conn: sqlite3.Connection) -> None:
                 JOIN phone_candidates pc ON pc.source_table='appointment_recordno_bridge' AND pc.source_row_id=arb.id
                 WHERE pc.primary_mobile IS NOT NULL OR pc.landline IS NOT NULL
             """)
+            ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_aph_arb ON appointment_phone_helper(arb_id)")
             ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_aph_last8 ON appointment_phone_helper(appointment_phone_last8)")
         except sqlite3.OperationalError:
             conn.rollback()
@@ -255,7 +275,8 @@ def phase_lookup(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE IF EXISTS payments_lookup_norm")
         conn.execute("""
             CREATE TABLE payments_lookup_norm (
-                payment_id INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payment_id INTEGER NOT NULL,
                 payment_name_norm TEXT,
                 payment_phone_norm TEXT,
                 payment_phone_last7 TEXT,
@@ -275,7 +296,9 @@ def phase_lookup(conn: sqlite3.Connection) -> None:
                 land = (r[2] or "").strip()
                 phone_norm = mid or land or ""
                 pt = "mobile" if mid else ("landline" if land else None)
-                pc_pay[r[0]] = (phone_norm, pt)
+                if r[0] not in pc_pay:
+                    pc_pay[r[0]] = []
+                pc_pay[r[0]].append((phone_norm, pt))
             pay_rows = conn.execute("SELECT id, patient_name_raw, phone_raw FROM stg_payments").fetchall()
         except sqlite3.OperationalError:
             pc_pay = {}
@@ -284,16 +307,20 @@ def phase_lookup(conn: sqlite3.Connection) -> None:
         for row in pay_rows:
             pid, name_raw, phone_raw = row[0], row[1], (row[2] or "")
             name_norm = normalize_persian_name(name_raw) if name_raw else ""
-            phone_norm, ptype = pc_pay.get(pid, ("", None))
-            digits = normalize_phone_canonical(phone_norm)
-            last7 = digits[-7:] if len(digits) >= 7 else ""
-            last8 = phone_to_last8(digits)
-            pay_data.append((pid, name_norm, phone_norm or None, last7 or None, last8 or None, ptype, name_raw or "", phone_raw))
+            phones = pc_pay.get(pid, [(None, None)])
+            for phone_norm, ptype in phones:
+                if not phone_norm and not ptype:
+                    phone_norm, ptype = "", None
+                digits = normalize_phone_canonical(phone_norm or "")
+                last7 = digits[-7:] if len(digits) >= 7 else ""
+                last8 = phone_to_last8(digits)
+                pay_data.append((pid, name_norm, phone_norm or None, last7 or None, last8 or None, ptype, name_raw or "", phone_raw))
         if pay_data:
             conn.executemany(
                 "INSERT INTO payments_lookup_norm (payment_id, payment_name_norm, payment_phone_norm, payment_phone_last7, payment_phone_last8, phone_type, patient_name_raw, phone_raw) VALUES (?,?,?,?,?,?,?,?)",
                 pay_data,
             )
+        ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_pln_payment_id ON payments_lookup_norm(payment_id)")
         ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_pln_phone ON payments_lookup_norm(payment_phone_norm)")
         ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_pln_last8 ON payments_lookup_norm(payment_phone_last8)")
         ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_pln_name ON payments_lookup_norm(payment_name_norm)")
@@ -356,6 +383,53 @@ def phase_exact(conn: sqlite3.Connection) -> None:
         run_sql(
             conn,
             """
+            DROP TABLE IF EXISTS payments_match_exact_phone_repaired
+            """,
+            "drop_exact_phone_repaired",
+        )
+        run_sql(
+            conn,
+            """
+            CREATE TABLE payments_match_exact_phone_repaired AS
+            SELECT pln.payment_id, ln.patient_id, pln.payment_phone_norm, pln.payment_name_norm, pln.phone_type
+            FROM payments_lookup_norm pln
+            JOIN patient_lookup_norm ln ON (
+                (LENGTH(TRIM(COALESCE(pln.payment_phone_norm,''))) = 10
+                 AND TRIM(pln.payment_phone_norm) GLOB '9*'
+                 AND ln.patient_phone_norm = '0' || TRIM(pln.payment_phone_norm))
+                OR
+                (LENGTH(TRIM(COALESCE(ln.patient_phone_norm,''))) = 10
+                 AND TRIM(ln.patient_phone_norm) GLOB '9*'
+                 AND pln.payment_phone_norm = '0' || TRIM(ln.patient_phone_norm))
+            )
+            WHERE pln.payment_phone_norm IS NOT NULL AND TRIM(pln.payment_phone_norm) != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM payments_match_exact_phone pe
+                  WHERE pe.payment_id = pln.payment_id AND pe.patient_id = ln.patient_id
+              )
+            """,
+            "payments_match_exact_phone_repaired",
+        )
+        n_rep = count_and_log(conn, "payments_match_exact_phone_repaired", "payments_match_exact_phone_repaired")
+        if n_rep > 0:
+            run_sql(
+                conn,
+                """
+                INSERT INTO patient_identity_evidence
+                (patient_id, candidate_mobile, candidate_landline, evidence_name, source, evidence_type, confidence)
+                SELECT m.patient_id,
+                       CASE WHEN m.phone_type='mobile' THEN (CASE WHEN LENGTH(TRIM(m.payment_phone_norm))=10 THEN '0'||TRIM(m.payment_phone_norm) ELSE m.payment_phone_norm END) ELSE NULL END,
+                       CASE WHEN m.phone_type='landline' OR m.phone_type IS NULL THEN (CASE WHEN LENGTH(TRIM(m.payment_phone_norm))=10 THEN '0'||TRIM(m.payment_phone_norm) ELSE m.payment_phone_norm END) ELSE NULL END,
+                       pln.patient_name_raw, 'payments', 'exact_phone_repaired', 0.80
+                FROM payments_match_exact_phone_repaired m
+                JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id AND pln.payment_phone_norm=m.payment_phone_norm
+                """,
+                "payments_exact_phone_repaired_evidence",
+            )
+
+        run_sql(
+            conn,
+            """
             DROP TABLE IF EXISTS payments_match_exact_name
             """,
             "drop_exact_name",
@@ -403,7 +477,7 @@ def phase_exact(conn: sqlite3.Connection) -> None:
                    CASE WHEN m.phone_type='landline' OR m.phone_type IS NULL THEN m.payment_phone_norm ELSE NULL END,
                    pln.patient_name_raw, 'payments', 'exact_phone', 0.88
             FROM payments_match_exact_phone m
-            JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id
+            JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id AND pln.payment_phone_norm=m.payment_phone_norm
             """,
             "payments_exact_phone_evidence",
         )
@@ -417,7 +491,7 @@ def phase_exact(conn: sqlite3.Connection) -> None:
                    CASE WHEN m.phone_type='landline' OR m.phone_type IS NULL THEN m.payment_phone_norm ELSE NULL END,
                    pln.patient_name_raw, 'payments', 'exact_name', 0.72
             FROM payments_match_exact_name m
-            JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id
+            JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id AND pln.payment_phone_norm=m.payment_phone_norm
             """,
             "payments_exact_name_evidence",
         )
@@ -431,7 +505,7 @@ def phase_exact(conn: sqlite3.Connection) -> None:
                    CASE WHEN m.phone_type='landline' OR m.phone_type IS NULL THEN m.payment_phone_norm ELSE NULL END,
                    pln.patient_name_raw, 'payments', 'name_plus_phone', 0.92
             FROM payments_match_name_plus_phone m
-            JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id
+            JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id AND pln.payment_phone_norm=m.payment_phone_norm
             """,
             "payments_name_plus_phone_evidence",
         )
@@ -488,6 +562,60 @@ def phase_appointment_exact(conn: sqlite3.Connection) -> None:
                     conn,
                     "SELECT COUNT(*) FROM patient_identity_evidence WHERE source='appointment_bridge' AND evidence_type='exact_phone'",
                     "evidence_appointment_exact_phone",
+                )
+            run_sql(
+                conn,
+                """
+                DROP TABLE IF EXISTS appointment_match_exact_phone_repaired
+                """,
+                "drop_appt_exact_phone_repaired",
+            )
+            run_sql(
+                conn,
+                """
+                CREATE TABLE appointment_match_exact_phone_repaired AS
+                SELECT aph.arb_id, ln.patient_id, aph.appointment_phone_norm
+                FROM appointment_phone_helper aph
+                JOIN patient_lookup_norm ln ON (
+                    (LENGTH(TRIM(COALESCE(aph.appointment_phone_norm,''))) = 10
+                     AND TRIM(aph.appointment_phone_norm) GLOB '9*'
+                     AND ln.patient_phone_norm = '0' || TRIM(aph.appointment_phone_norm))
+                    OR
+                    (LENGTH(TRIM(COALESCE(ln.patient_phone_norm,''))) = 10
+                     AND TRIM(ln.patient_phone_norm) GLOB '9*'
+                     AND aph.appointment_phone_norm = '0' || TRIM(ln.patient_phone_norm))
+                )
+                WHERE aph.appointment_phone_norm IS NOT NULL AND TRIM(aph.appointment_phone_norm) != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM appointment_match_exact_phone ae
+                      WHERE ae.arb_id = aph.arb_id AND ae.patient_id = ln.patient_id
+                  )
+                """,
+                "appointment_match_exact_phone_repaired",
+            )
+            appt_rep_cnt = conn.execute(
+                "SELECT COUNT(*) FROM appointment_phone_helper WHERE LENGTH(TRIM(COALESCE(appointment_phone_norm,''))) = 10 AND TRIM(appointment_phone_norm) GLOB '9*'"
+            ).fetchone()[0]
+            repair_total = conn.execute(
+                "SELECT COUNT(*) FROM payments_lookup_norm WHERE LENGTH(TRIM(COALESCE(payment_phone_norm,''))) = 10 AND TRIM(payment_phone_norm) GLOB '9*'"
+            ).fetchone()[0] + appt_rep_cnt
+            print("[COUNT] repair_rule_mobile_10_digit=%d" % repair_total)
+            n_rep = count_and_log(conn, "appointment_match_exact_phone_repaired", "appointment_match_exact_phone_repaired")
+            if n_rep > 0:
+                run_sql(
+                    conn,
+                    """
+                    INSERT INTO patient_identity_evidence
+                    (patient_id, candidate_mobile, candidate_landline, evidence_name, source, evidence_type, confidence)
+                    SELECT m.patient_id,
+                           CASE WHEN LENGTH(TRIM(m.appointment_phone_norm))=10 THEN '0'||TRIM(m.appointment_phone_norm) ELSE m.appointment_phone_norm END,
+                           NULL, arb.patient_name_raw,
+                           'appointment_bridge', 'exact_phone_repaired', 0.80
+                    FROM appointment_match_exact_phone_repaired m
+                    JOIN appointment_phone_helper aph ON aph.arb_id = m.arb_id
+                    JOIN appointment_recordno_bridge arb ON arb.id = m.arb_id
+                    """,
+                    "appointment_exact_phone_repaired_evidence",
                 )
 
         with phase_timer("phase_appointment_exact subphase: exact_name"):
@@ -602,6 +730,9 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
             "payments_last8_stats",
         )
         count_and_log(conn, "payments_last8_stats", "payments_last8_stats")
+        count_and_log(conn, "SELECT COUNT(*) FROM payments_last8_stats WHERE cnt=1", "payments_last8_cnt_eq1")
+        count_and_log(conn, "SELECT COUNT(*) FROM payments_last8_stats WHERE cnt=2", "payments_last8_cnt_eq2")
+        count_and_log(conn, "SELECT COUNT(*) FROM payments_last8_stats WHERE cnt>2", "payments_last8_cnt_gt2")
 
         run_sql(
             conn,
@@ -622,6 +753,9 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
             "patients_last8_stats",
         )
         count_and_log(conn, "patients_last8_stats", "patients_last8_stats")
+        count_and_log(conn, "SELECT COUNT(*) FROM patients_last8_stats WHERE cnt=1", "patients_last8_cnt_eq1")
+        count_and_log(conn, "SELECT COUNT(*) FROM patients_last8_stats WHERE cnt=2", "patients_last8_cnt_eq2")
+        count_and_log(conn, "SELECT COUNT(*) FROM patients_last8_stats WHERE cnt>2", "patients_last8_cnt_gt2")
 
         ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_payments_last8_stats ON payments_last8_stats(payment_phone_last8)")
         ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_patients_last8_stats ON patients_last8_stats(patient_phone_last8)")
@@ -648,7 +782,7 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
                   WHERE pe.payment_id = pln.payment_id AND pe.patient_id = ln.patient_id
               )
             """
-            % (MAX_LAST8_COLLISION_PAYMENTS, MAX_LAST8_COLLISION_PATIENTS),
+            % (LAST8_SAFE_MAX_PAYMENTS, LAST8_SAFE_MAX_PATIENTS),
             "payments_match_phone_last8_safe",
         )
         n = count_and_log(conn, "payments_match_phone_last8_safe", "payments_match_phone_last8_safe")
@@ -663,10 +797,14 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
                        CASE WHEN m.phone_type='landline' OR m.phone_type IS NULL THEN m.payment_phone_norm ELSE NULL END,
                        pln.patient_name_raw, 'payments', 'phone_last8_safe', 0.82
                 FROM payments_match_phone_last8_safe m
-                JOIN payments_lookup_norm pln ON pln.payment_id = m.payment_id
+                JOIN payments_lookup_norm pln ON pln.payment_id=m.payment_id AND pln.payment_phone_norm=m.payment_phone_norm
                 """,
                 "payments_phone_last8_safe_evidence",
             )
+        pay_l8 = conn.execute(
+            "SELECT COUNT(DISTINCT patient_id) FROM patient_identity_evidence WHERE source='payments' AND evidence_type='phone_last8_safe'"
+        ).fetchone()[0]
+        print("[COUNT] distinct_patients_payments_phone_last8_safe=%d" % pay_l8)
 
         run_sql(
             conn,
@@ -687,6 +825,9 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
             "appointments_last8_stats",
         )
         count_and_log(conn, "appointments_last8_stats", "appointments_last8_stats")
+        count_and_log(conn, "SELECT COUNT(*) FROM appointments_last8_stats WHERE cnt=1", "appointments_last8_cnt_eq1")
+        count_and_log(conn, "SELECT COUNT(*) FROM appointments_last8_stats WHERE cnt=2", "appointments_last8_cnt_eq2")
+        count_and_log(conn, "SELECT COUNT(*) FROM appointments_last8_stats WHERE cnt>2", "appointments_last8_cnt_gt2")
         ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_appointments_last8_stats ON appointments_last8_stats(appointment_phone_last8)")
 
         run_sql(
@@ -712,7 +853,7 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
                   WHERE ae.arb_id = aph.arb_id AND ae.patient_id = ln.patient_id
               )
             """
-            % (MAX_LAST8_COLLISION_APPOINTMENTS, MAX_LAST8_COLLISION_PATIENTS),
+            % (LAST8_SAFE_MAX_APPOINTMENTS, LAST8_SAFE_MAX_PATIENTS),
             "appointment_match_phone_last8_safe",
         )
         n = count_and_log(conn, "appointment_match_phone_last8_safe", "appointment_match_phone_last8_safe")
@@ -730,6 +871,20 @@ def phase_last8_safe(conn: sqlite3.Connection) -> None:
                 """,
                 "appointment_phone_last8_safe_evidence",
             )
+        appt_l8 = conn.execute(
+            "SELECT COUNT(DISTINCT patient_id) FROM patient_identity_evidence WHERE source='appointment_bridge' AND evidence_type='phone_last8_safe'"
+        ).fetchone()[0]
+        print("[COUNT] distinct_patients_appointment_phone_last8_safe=%d" % appt_l8)
+        new_beyond = conn.execute("""
+            SELECT COUNT(DISTINCT e.patient_id) FROM patient_identity_evidence e
+            WHERE (e.source='payments' AND e.evidence_type='phone_last8_safe')
+               OR (e.source='appointment_bridge' AND e.evidence_type='phone_last8_safe')
+            AND NOT EXISTS (SELECT 1 FROM patient_identity_evidence o WHERE o.patient_id=e.patient_id
+                AND ((o.source='patients_direct')
+                  OR (o.source='appointment_bridge' AND o.evidence_type IN ('exact_phone','exact_name','phone_plus_name'))
+                  OR (o.source='payments' AND o.evidence_type IN ('exact_phone','exact_name','name_plus_phone'))))
+        """).fetchone()[0]
+        print("[COUNT] distinct_patients_newly_added_beyond_exact=%d" % new_beyond)
         count_and_log(conn, "SELECT COUNT(*) FROM patient_identity_evidence", "patient_identity_evidence_total")
 
 
@@ -784,6 +939,7 @@ def phase_rebuild(conn: sqlite3.Connection) -> None:
                                             CASE evidence_type
                                                 WHEN 'phone_plus_name' THEN 9
                                                 WHEN 'exact_phone' THEN 7
+                                                WHEN 'exact_phone_repaired' THEN 6
                                                 WHEN 'exact_name' THEN 5
                                                 WHEN 'phone_last8_safe' THEN 3
                                                 ELSE 0 END
@@ -791,6 +947,7 @@ def phase_rebuild(conn: sqlite3.Connection) -> None:
                                             CASE evidence_type
                                                 WHEN 'name_plus_phone' THEN 8
                                                 WHEN 'exact_phone' THEN 6
+                                                WHEN 'exact_phone_repaired' THEN 5
                                                 WHEN 'exact_name' THEN 4
                                                 WHEN 'phone_last8_safe' THEN 2
                                                 ELSE 0 END
@@ -858,9 +1015,11 @@ def phase_metrics(conn: sqlite3.Connection) -> None:
         by_pay = conn.execute("SELECT COUNT(DISTINCT patient_id) FROM patient_identity_evidence WHERE source='payments'").fetchone()[0]
         by_last8_pay = conn.execute("SELECT COUNT(DISTINCT patient_id) FROM patient_identity_evidence WHERE source='payments' AND evidence_type='phone_last8_safe'").fetchone()[0]
         by_last8_appt = conn.execute("SELECT COUNT(DISTINCT patient_id) FROM patient_identity_evidence WHERE source='appointment_bridge' AND evidence_type='phone_last8_safe'").fetchone()[0]
+        by_repaired = conn.execute("SELECT COUNT(DISTINCT patient_id) FROM patient_identity_evidence WHERE evidence_type='exact_phone_repaired'").fetchone()[0]
 
         print("[COUNT] distinct_patients_by_source: direct=%d appointment_bridge=%d payments=%d" % (direct, by_appt, by_pay))
         print("[COUNT] distinct_patients_last8_safe: payments=%d appointment_bridge=%d" % (by_last8_pay, by_last8_appt))
+        print("[COUNT] distinct_patients_recovered_by_repaired_phones=%d" % by_repaired)
 
 
 # ---------------------------------------------------------------------------
@@ -916,10 +1075,35 @@ def run_recovery(db_path: Path, phase: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Patient Phone Recovery - Phase-based Pipeline")
-    parser.add_argument("--phase", required=True, choices=["all", "lookup", "exact", "appointment_exact", "last8_safe", "rebuild", "metrics"])
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=[
+            "all",
+            "lookup",
+            "exact",
+            "appointment_exact",
+            "last8_safe",
+            "rebuild",
+            "metrics",
+            "unrecovered_analysis",
+        ],
+    )
     args = parser.parse_args()
     db_path = get_db_path()
     if not db_path.exists():
         logger.error("Database not found: %s", db_path)
         sys.exit(1)
-    run_recovery(db_path, args.phase)
+    if args.phase == "unrecovered_analysis":
+        import importlib.util
+        mod_path = Path(__file__).resolve().parent / "analyze_unrecovered_patients.py"
+        spec = importlib.util.spec_from_file_location("analyze_unrecovered_patients", mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        conn = sqlite3.connect(str(db_path), timeout=120)
+        try:
+            mod.run(conn)
+        finally:
+            conn.close()
+    else:
+        run_recovery(db_path, args.phase)

@@ -6,6 +6,7 @@
 import { toJalaali } from 'jalaali-js'
 
 const CURRENCY_UNITS = { fa: 'تومان', en: 'Toman' }
+const CURRENCY_UNITS_RIAL = { fa: 'ریال', en: 'IRR' }
 
 export function getLocale(lng) {
   return lng === 'fa' ? 'fa-IR' : 'en-US'
@@ -134,7 +135,20 @@ export function formatCurrencyValue(n, lng = 'en') {
   return new Intl.NumberFormat(getDigitLocale(lng), { maximumFractionDigits: 0 }).format(Math.round(n))
 }
 
-export { CURRENCY_UNITS }
+/**
+ * Format amount as IRR (Iranian Rial). Reception panel: all financial values are ریال.
+ * Uses thousand separators; negative values remain readable.
+ */
+export function formatCurrencyRial(n, lng = 'en') {
+  if (n == null || n === undefined) return '—'
+  if (typeof n !== 'number' || isNaN(n)) return '—'
+  const locale = getDigitLocale(lng)
+  const unit = CURRENCY_UNITS_RIAL[lng] || CURRENCY_UNITS_RIAL.en
+  const s = new Intl.NumberFormat(locale, { maximumFractionDigits: 0, minimumFractionDigits: 0 }).format(Math.round(n))
+  return n < 0 ? `−${s.replace('-', '')} ${unit}` : `${s} ${unit}`
+}
+
+export { CURRENCY_UNITS, CURRENCY_UNITS_RIAL }
 
 /**
  * Convert Gregorian date string (YYYY-MM-DD) to Shamsi (YYYY/MM/DD).

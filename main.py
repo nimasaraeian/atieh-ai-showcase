@@ -46,6 +46,7 @@ from app.api.manager.dashboard import router as manager_api_router
 from app.api.manager_dashboard import router as manager_dashboard_router
 from app.api.insurance_priority import router as insurance_priority_router
 from app.api.receptionist_finalize import router as receptionist_finalize_router
+from app.api.reception import router as reception_router
 from app.routers import frontend_api
 
 # -----------------------------
@@ -81,6 +82,7 @@ app.include_router(manager_api_router)
 app.include_router(manager_dashboard_router)
 app.include_router(insurance_priority_router)
 app.include_router(receptionist_finalize_router)
+app.include_router(reception_router)
 app.include_router(frontend_api.router)
 
 # Patient search must be registered before /patients/{patient_id} to match /patients/search

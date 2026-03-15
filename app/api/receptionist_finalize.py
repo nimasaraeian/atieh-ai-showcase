@@ -7,7 +7,7 @@ Persists AI-recommended slot selections to ai_finalized_bookings table.
 import os
 import sqlite3
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
@@ -48,7 +48,7 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
 class FinalizeBookingRequest(BaseModel):
     record_no: str
     patient_name: str
-    doctor_name: str
+    doctor_name: Optional[str] = None  # Optional when clinic-level slot (no doctor selected)
     service: str
     date: str
     time: str
@@ -59,18 +59,19 @@ def finalize_booking(payload: FinalizeBookingRequest = Body(...)):
     """
     Persist an AI-recommended booking to ai_finalized_bookings.
     Returns the created booking record.
+    When no doctor was selected, doctor_name may be empty; stored as "—" for traceability.
     """
     record_no = (payload.record_no or "").strip()
     patient_name = (payload.patient_name or "").strip()
-    doctor_name = (payload.doctor_name or "").strip()
+    doctor_name = (payload.doctor_name or "").strip() or "—"
     service = (payload.service or "").strip()
     date_val = (payload.date or "").strip()
     time_val = (payload.time or "").strip()
 
-    if not record_no or not patient_name or not doctor_name or not service or not date_val or not time_val:
+    if not record_no or not patient_name or not service or not date_val or not time_val:
         raise HTTPException(
             status_code=400,
-            detail="record_no, patient_name, doctor_name, service, date, and time are required",
+            detail="record_no, patient_name, service, date, and time are required",
         )
 
     db_path = _get_db_path()

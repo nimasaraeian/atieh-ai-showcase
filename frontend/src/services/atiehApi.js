@@ -14,6 +14,7 @@ function extractError(payload) {
 }
 
 const REQUEST_TIMEOUT_MS = 15000
+const PATIENT_SEARCH_TIMEOUT_MS = 300000  // 5 min — جستجوی بیمار بدون محدودیت عملی
 
 const INSURANCE_CACHE_KEY = 'atieh_insurance_catalog'
 
@@ -82,13 +83,25 @@ export const atiehApi = {
   recommendSlot: (body) => request('/ai/engine/recommend-slot', { method: 'POST', body: JSON.stringify(body) }),
 
   searchPatients: (q, limit = 50, offset = 0) =>
-    request(`/api/staff/patients/search?q=${encodeURIComponent(q || '')}&limit=${limit}&offset=${offset}`),
+    request(`/api/staff/patients/search?q=${encodeURIComponent(q || '')}&limit=${limit}&offset=${offset}`, {}, PATIENT_SEARCH_TIMEOUT_MS),
 
   getPatientByRecordNo: (recordNo) =>
     request(`/patients/${encodeURIComponent(String(recordNo || '').trim())}`),
 
   getFinancialPatientDetail: (recordNo) =>
     request(`/financial/patient/${encodeURIComponent(String(recordNo || '').trim())}`),
+
+  /** V2 reception: search by name, phone, CRM code, or patient_id. page_size default 50. */
+  receptionSearchPatient: (q, page = 1, pageSize = 50) =>
+    request(`/api/reception/search-patient?q=${encodeURIComponent(q || '')}&page=${page}&page_size=${pageSize}`),
+
+  /** V2 reception: all linked profiles for a patient_id */
+  receptionGetPatient: (patientId) =>
+    request(`/api/reception/patient/${encodeURIComponent(patientId)}`),
+
+  /** V2 reception: profile by crm_patient_code */
+  receptionGetByCrmCode: (crmCode) =>
+    request(`/api/reception/crm-code/${encodeURIComponent(String(crmCode || '').trim())}`),
 
   getServices: () => request('/ai/engine/catalog/services'),
   getInsurances: () => request('/ai/engine/catalog/insurances', {}, INSURANCE_TIMEOUT_MS),

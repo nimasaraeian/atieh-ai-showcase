@@ -324,6 +324,11 @@ def recommend_slots_from_db(payload: dict, top_n: int = 200) -> dict:
 
 from pathlib import Path as _Path
 
+try:
+    from app.engine.patient_priority import get_patient_priority_profile
+except ImportError:
+    get_patient_priority_profile = None
+
 
 def _resolve_slots_db() -> _Path:
     p = _Path(r".\atieh_clinic.db")
@@ -493,7 +498,28 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
 
     insurance_name = payload.get("insurance") or None
     record_no = str(payload.get("record_no") or "").strip() or None
+    crm_code = str(payload.get("crm_patient_code") or "").strip() or None
+    doctor_id = payload.get("doctor") or payload.get("doctor_id")
+    if doctor_id is not None:
+        try:
+            doctor_id = int(doctor_id)
+        except (TypeError, ValueError):
+            doctor_id = None
+
     patient_ctx = _load_patient_context(record_no)
+    priority_profile = None
+    if get_patient_priority_profile and (record_no or crm_code):
+        try:
+            priority_profile = get_patient_priority_profile(record_no=record_no, crm_patient_code=crm_code)
+            if priority_profile:
+                patient_ctx["priority_profile"] = priority_profile
+                patient_ctx["patient_priority_score"] = (priority_profile.get("patient_priority_score") or 0) / 100.0
+                patient_ctx["patient_priority_tier"] = priority_profile.get("patient_priority_tier")
+                patient_ctx["scheduling_window_min_days"] = priority_profile.get("scheduling_window_min_days", 0)
+                patient_ctx["scheduling_window_max_days"] = priority_profile.get("scheduling_window_max_days", 14)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Failed to load patient priority profile: %s", e)
 
     conn = sqlite3.connect(str(slots_db))
     conn.row_factory = sqlite3.Row
@@ -519,6 +545,9 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
     if preferred_day_fa:
         sql += " AND t.weekday_name = ? "
         params.append(preferred_day_fa)
+    if doctor_id is not None:
+        sql += " AND d.doctor_id = ? "
+        params.append(doctor_id)
 
     sql += """
     ORDER BY
@@ -531,6 +560,25 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
 
     rows = cur.execute(sql, params).fetchall()
     conn.close()
+
+    if priority_profile and rows:
+        min_days = patient_ctx.get("scheduling_window_min_days", 0)
+        max_days = patient_ctx.get("scheduling_window_max_days", 365)
+        today = datetime.now().date()
+        filtered = []
+        for row in rows:
+            weekday_fa = str(row["weekday_name"] or "").strip()
+            weekday_py = FA_WEEKDAY_TO_PY.get(weekday_fa)
+            if weekday_py is not None:
+                slot_date_str = _next_occurrence_date(weekday_py)
+                slot_d = datetime.strptime(slot_date_str, "%Y-%m-%d").date()
+                days_ahead = (slot_d - today).days
+                if min_days <= days_ahead <= max_days:
+                    filtered.append(row)
+            else:
+                filtered.append(row)
+        if filtered:
+            rows = filtered
 
     insurance_priority_df = _load_insurance_priority_df()
 
@@ -572,6 +620,12 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         final_score = round(_clamp01(final_score), 3)
 
         reasons = []
+        if patient_ctx.get("patient_priority_tier"):
+            reasons.append(f"PATIENT_TIER_{patient_ctx['patient_priority_tier']}")
+        if patient_ctx.get("scheduling_window_max_days") is not None:
+            reasons.append(f"SCHEDULING_WINDOW_DAYS_{patient_ctx.get('scheduling_window_max_days')}")
+        if doctor_id is not None:
+            reasons.append("PREFERRED_DOCTOR_FILTER")
         if patient_ctx["financial_tier"]:
             reasons.append(f"TIER_{patient_ctx['financial_tier']}")
         if patient_ctx["in_followup_queue"]:
@@ -590,30 +644,36 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         slot_date = _next_occurrence_date(weekday_py) if weekday_py is not None else None
         weekday_en = FA_WEEKDAY_TO_EN.get(weekday_fa) if weekday_fa else None
 
-        recommendations.append(
-            {
-                "slot_id": row["slot_id"],
-                "doctor_id": row["doctor_id"],
-                "doctor_name": row["doctor_name"],
-                "weekday": weekday_fa or row["weekday_name"],
-                "weekday_en": weekday_en,
-                "date": slot_date,
-                "shift": row["shift_label"],
-                "time": start_time,
-                "floor": row["floor_label"],
-                "unit": row["unit_label"],
-                "score": final_score,
-                "final_score": final_score,
-                "time_score": round(time_score, 3),
-                "financial_score": round(financial_score, 3),
-                "patient_priority_score": round(patient_priority_score, 3),
-                "patient_value_score": round(patient_value_score, 3),
-                "followup_boost": round(followup_boost, 3),
-                "top300_boost": round(top300_boost, 3),
-                "tier_boost": round(tier_boost, 3),
-                "reasons": reasons,
-            }
-        )
+        # When no doctor filter: do not suggest a doctor (clinic-level slot)
+        rec_doctor_id = row["doctor_id"] if doctor_id is not None else None
+        rec_doctor_name = row["doctor_name"] if doctor_id is not None else None
+        rec = {
+            "slot_id": row["slot_id"],
+            "doctor_id": rec_doctor_id,
+            "doctor_name": rec_doctor_name,
+            "weekday": weekday_fa or row["weekday_name"],
+            "weekday_en": weekday_en,
+            "date": slot_date,
+            "shift": row["shift_label"],
+            "time": start_time,
+            "floor": row["floor_label"],
+            "unit": row["unit_label"],
+            "score": final_score,
+            "final_score": final_score,
+            "time_score": round(time_score, 3),
+            "financial_score": round(financial_score, 3),
+            "patient_priority_score": round(patient_priority_score, 3),
+            "patient_value_score": round(patient_value_score, 3),
+            "followup_boost": round(followup_boost, 3),
+            "top300_boost": round(top300_boost, 3),
+            "tier_boost": round(tier_boost, 3),
+            "reasons": reasons,
+        }
+        if patient_ctx.get("patient_priority_tier"):
+            rec["patient_priority_tier"] = patient_ctx["patient_priority_tier"]
+            rec["scheduling_window_days"] = patient_ctx.get("scheduling_window_max_days")
+        rec["preferred_doctor_filter"] = doctor_id is not None
+        recommendations.append(rec)
 
     recommendations = sorted(
         recommendations,
@@ -623,13 +683,14 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
     recommendations = recommendations[:TOP_N_RECOMMENDATIONS]
     count = len(recommendations)
 
-    return {
+    out = {
         "ok": True,
         "source": "doctor_time_slots",
         "count": count,
         "preferred_day_input": preferred_day_en,
         "preferred_day_mapped": preferred_day_fa,
         "record_no_used": record_no,
+        "preferred_doctor_filter": doctor_id is not None,
         "patient_context": {
             "financial_tier": patient_ctx["financial_tier"],
             "financial_value_score": patient_ctx["financial_value_score"],
@@ -648,6 +709,11 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         "score_formula": "0.45*time + 0.15*insurance + 0.20*patient_priority + 0.10*patient_value + followup_boost + top300_boost + tier_boost",
         "recommendations": recommendations,
     }
+    if priority_profile:
+        out["patient_priority_profile"] = priority_profile
+        out["patient_context"]["patient_priority_tier"] = priority_profile.get("patient_priority_tier")
+        out["patient_context"]["scheduling_window_days"] = priority_profile.get("scheduling_window_max_days")
+    return out
 
 
 

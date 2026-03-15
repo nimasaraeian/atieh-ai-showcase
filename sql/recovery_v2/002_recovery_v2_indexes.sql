@@ -1,0 +1,23 @@
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_payments_lookup_norm_phone
+ON payments_lookup_norm(payment_phone_norm);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_appointment_phone_helper_phone
+ON appointment_phone_helper(appointment_phone_norm);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_patient_lookup_norm_phone
+ON patient_lookup_norm(patient_phone_norm);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_appointment_recordno_bridge_record_no
+ON appointment_recordno_bridge(record_no);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_appointment_phone_helper_record_no
+ON appointment_phone_helper(record_no);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_payments_lookup_norm_last8
+ON payments_lookup_norm(payment_phone_last8);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_appointment_phone_helper_last8
+ON appointment_phone_helper(appointment_phone_last8);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_v2_patient_lookup_norm_last8
+ON patient_lookup_norm(patient_phone_last8);
