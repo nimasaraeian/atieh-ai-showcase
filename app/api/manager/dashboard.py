@@ -7,19 +7,24 @@ import sqlite3
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.security.roles import serialize_manager_patient
+from app.security.rbac import require_roles
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("FINANCIAL_DB_PATH") or (
-    "atieh_clinic_working.db"
-    if os.path.exists("atieh_clinic_working.db")
-    else "atieh_clinic.db"
+DB_PATH = (
+    os.environ.get("ATIEH_DB_PATH")
+    or os.environ.get("FINANCIAL_DB_PATH")
+    or ("atieh_clinic_working.db" if os.path.exists("atieh_clinic_working.db") else "atieh_clinic.db")
 )
 
-router = APIRouter(prefix="/api/manager", tags=["Manager"])
+router = APIRouter(
+    prefix="/api/manager",
+    tags=["Manager"],
+    dependencies=[Depends(require_roles("clinic_manager"))],
+)
 
 
 def _get_conn():
@@ -40,39 +45,108 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def get_dashboard_summary() -> Dict[str, Any]:
     """
     Tier distribution and patient counts for manager dashboard.
-    Uses financial_identity_profile; falls back gracefully if not available.
+    Uses patient_value_score_v2_final when available; falls back gracefully.
+    Also includes lightweight operational metrics (finalized/reverted, imports, today's appointments)
+    without failing if tables/views are missing.
     """
     conn = _get_conn()
     try:
         cur = conn.cursor()
         result: Dict[str, Any] = {
+            # Tier distribution
             "total_patients": 0,
             "vip_patients": 0,
             "high_patients": 0,
             "medium_patients": 0,
-            "low_patients": 0,
+            "none_patients": 0,
+            # Ops metrics
+            "today_appointments_count": 0,
+            "finalized_bookings_count": 0,
+            "reverted_bookings_count": 0,
+            "last_import": None,
         }
 
-        if not _table_exists(conn, "financial_identity_profile"):
-            return result
+        # Tier distribution: prefer v2_final (patient-level, correct tiers)
+        if _table_exists(conn, "patient_value_score_v2_final"):
+            try:
+                cur.execute("SELECT COUNT(*) FROM patient_value_score_v2_final")
+                result["total_patients"] = cur.fetchone()[0] or 0
+                for tier, key in [
+                    ("VIP", "vip_patients"),
+                    ("HIGH", "high_patients"),
+                    ("MEDIUM", "medium_patients"),
+                    ("NONE", "none_patients"),
+                ]:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM patient_value_score_v2_final WHERE financial_tier = ?",
+                        (tier,),
+                    )
+                    result[key] = cur.fetchone()[0] or 0
+            except sqlite3.OperationalError:
+                pass
+        elif _table_exists(conn, "financial_identity_profile"):
+            # Fallback: older record_no-level layer
+            try:
+                cur.execute("SELECT COUNT(*) FROM financial_identity_profile")
+                result["total_patients"] = cur.fetchone()[0] or 0
+                for tier, key in [
+                    ("VIP", "vip_patients"),
+                    ("HIGH", "high_patients"),
+                    ("MEDIUM", "medium_patients"),
+                ]:
+                    try:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM financial_identity_profile WHERE financial_tier = ?",
+                            (tier,),
+                        )
+                        result[key] = cur.fetchone()[0] or 0
+                    except sqlite3.OperationalError:
+                        result[key] = 0
+            except sqlite3.OperationalError:
+                pass
 
-        cur.execute("SELECT COUNT(*) FROM financial_identity_profile")
-        result["total_patients"] = cur.fetchone()[0]
-
-        for tier, key in [
-            ("VIP", "vip_patients"),
-            ("HIGH", "high_patients"),
-            ("MEDIUM", "medium_patients"),
-            ("LOW", "low_patients"),
-        ]:
+        # Finalized & reverted counts
+        if _table_exists(conn, "ai_finalized_bookings"):
+            try:
+                cur.execute("SELECT COUNT(*) FROM ai_finalized_bookings WHERE status = 'confirmed'")
+                result["finalized_bookings_count"] = cur.fetchone()[0] or 0
+            except sqlite3.OperationalError:
+                pass
             try:
                 cur.execute(
-                    "SELECT COUNT(*) FROM financial_identity_profile WHERE financial_tier = ?",
-                    (tier,),
+                    "SELECT COUNT(*) FROM ai_finalized_bookings WHERE status = 'reverted' OR COALESCE(is_reverted, 0) = 1"
                 )
-                result[key] = cur.fetchone()[0]
+                result["reverted_bookings_count"] = cur.fetchone()[0] or 0
             except sqlite3.OperationalError:
-                result[key] = 0
+                pass
+
+        # Today's appointments (best-effort; different schemas exist)
+        if _table_exists(conn, "appointments"):
+            for col in ("appointment_date", "date", "start_datetime", "created_at"):
+                try:
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM appointments WHERE date({col}) = date('now', 'localtime')"
+                    )
+                    result["today_appointments_count"] = cur.fetchone()[0] or 0
+                    break
+                except sqlite3.OperationalError:
+                    continue
+
+        # Last import status
+        if _table_exists(conn, "import_runs_v1"):
+            try:
+                row = cur.execute(
+                    """
+                    SELECT id, file_name, status, rows_loaded, started_at, finished_at, notes
+                    FROM import_runs_v1
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if row:
+                    result["last_import"] = dict(row)
+            except sqlite3.OperationalError:
+                pass
 
         return result
     finally:

@@ -13,7 +13,9 @@ import sqlite3
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+
+from app.security.rbac import require_roles
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,11 @@ DB_PATH = os.environ.get("FINANCIAL_DB_PATH") or (
     else "atieh_clinic.db"
 )
 
-router = APIRouter(prefix="/api/manager", tags=["Manager Dashboard"])
+router = APIRouter(
+    prefix="/api/manager",
+    tags=["Manager Dashboard"],
+    dependencies=[Depends(require_roles("clinic_manager"))],
+)
 
 
 def _get_conn():

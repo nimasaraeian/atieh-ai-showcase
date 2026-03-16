@@ -9,18 +9,26 @@ import sqlite3
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+from app.security.rbac import require_roles
+
 router = APIRouter(
     prefix="/api/receptionist",
     tags=["Receptionist"],
+    dependencies=[Depends(require_roles("receptionist", "clinic_manager"))],
 )
 
 
 def _get_db_path() -> str:
+    # Prefer ATIEH_DB_PATH for consistency with the rest of the app, but keep
+    # DATABASE_URL compatibility for existing deployments.
+    env_db = os.getenv("ATIEH_DB_PATH")
+    if env_db:
+        return env_db
     db_url = os.getenv("DATABASE_URL", "sqlite:///atieh_clinic.db")
     if db_url.startswith("sqlite:///"):
         return db_url[len("sqlite:///"):]
@@ -58,6 +66,18 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         if "receptionist_user" not in existing:
             cur.execute("ALTER TABLE ai_finalized_bookings ADD COLUMN receptionist_user TEXT NULL")
             conn.commit()
+        if "is_reverted" not in existing:
+            cur.execute("ALTER TABLE ai_finalized_bookings ADD COLUMN is_reverted INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        if "reverted_at" not in existing:
+            cur.execute("ALTER TABLE ai_finalized_bookings ADD COLUMN reverted_at TEXT NULL")
+            conn.commit()
+        if "reverted_by" not in existing:
+            cur.execute("ALTER TABLE ai_finalized_bookings ADD COLUMN reverted_by TEXT NULL")
+            conn.commit()
+        if "revert_reason" not in existing:
+            cur.execute("ALTER TABLE ai_finalized_bookings ADD COLUMN revert_reason TEXT NULL")
+            conn.commit()
     except sqlite3.OperationalError:
         return
 
@@ -70,6 +90,11 @@ class FinalizeBookingRequest(BaseModel):
     date: str
     time: str
     receptionist_user: Optional[str] = None
+
+
+class RevertBookingRequest(BaseModel):
+    reverted_by: Optional[str] = None
+    revert_reason: Optional[str] = None
 
 
 @router.post("/finalize-booking")
@@ -114,7 +139,15 @@ def finalize_booking(payload: FinalizeBookingRequest = Body(...)):
         conn.commit()
         row_id = cur.lastrowid
         row = cur.execute(
-            "SELECT id, record_no, patient_name, doctor_name, service, date, time, receptionist_user, created_at, source, status FROM ai_finalized_bookings WHERE id = ?",
+            """
+            SELECT
+              id, record_no, patient_name, doctor_name, service, date, time,
+              receptionist_user, created_at, source, status,
+              COALESCE(is_reverted, 0) AS is_reverted,
+              reverted_at, reverted_by, revert_reason
+            FROM ai_finalized_bookings
+            WHERE id = ?
+            """,
             (row_id,),
         ).fetchone()
         return dict(row)
@@ -142,7 +175,11 @@ def get_finalized_bookings(limit: int = 100):
         try:
             cur.execute(
                 """
-                SELECT id, record_no, patient_name, doctor_name, service, date, time, receptionist_user, created_at, source, status
+                SELECT
+                  id, record_no, patient_name, doctor_name, service, date, time,
+                  receptionist_user, created_at, source, status,
+                  COALESCE(is_reverted, 0) AS is_reverted,
+                  reverted_at, reverted_by, revert_reason
                 FROM ai_finalized_bookings
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -153,5 +190,90 @@ def get_finalized_bookings(limit: int = 100):
             return {"ok": True, "data": [dict(r) for r in rows]}
         except sqlite3.OperationalError:
             return {"ok": True, "data": []}
+    finally:
+        conn.close()
+
+
+@router.post("/finalized-bookings/{booking_id}/revert")
+def revert_finalized_booking(booking_id: int, payload: RevertBookingRequest = Body(default=RevertBookingRequest())):
+    """
+    Revert a finalized booking without deleting it (auditable).
+
+    Rules:
+    - Only existing bookings can be reverted.
+    - A booking can be reverted only once.
+    - Reverting marks status='reverted' and sets is_reverted=1 + audit fields.
+    """
+    db_path = _get_db_path()
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        _ensure_table(conn)
+        _ensure_columns(conn)
+        cur = conn.cursor()
+
+        row = cur.execute(
+            """
+            SELECT
+              id, record_no, patient_name, doctor_name, service, date, time,
+              receptionist_user, created_at, source, status,
+              COALESCE(is_reverted, 0) AS is_reverted,
+              reverted_at, reverted_by, revert_reason
+            FROM ai_finalized_bookings
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(booking_id),),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="finalized booking not found")
+
+        current = dict(row)
+        if int(current.get("is_reverted") or 0) == 1 or str(current.get("status") or "").lower() == "reverted":
+            raise HTTPException(status_code=409, detail="booking already reverted")
+
+        reverted_by = (payload.reverted_by or "").strip() or None
+        revert_reason = (payload.revert_reason or "").strip() or None
+
+        cur.execute(
+            """
+            UPDATE ai_finalized_bookings
+            SET
+              status = 'reverted',
+              is_reverted = 1,
+              reverted_at = datetime('now'),
+              reverted_by = ?,
+              revert_reason = ?
+            WHERE id = ?
+            """,
+            (reverted_by, revert_reason, int(booking_id)),
+        )
+        conn.commit()
+
+        updated = cur.execute(
+            """
+            SELECT
+              id, record_no, patient_name, doctor_name, service, date, time,
+              receptionist_user, created_at, source, status,
+              COALESCE(is_reverted, 0) AS is_reverted,
+              reverted_at, reverted_by, revert_reason
+            FROM ai_finalized_bookings
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(booking_id),),
+        ).fetchone()
+
+        return {"ok": True, "before": current, "after": dict(updated) if updated else None}
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.exception("revert_finalized_booking failed")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

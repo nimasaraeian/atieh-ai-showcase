@@ -50,7 +50,12 @@ def _ensure_indexes():
     ]
     with engine.connect() as conn:
         for ddl in indexes:
-            conn.execute(text(ddl))
+            try:
+                conn.execute(text(ddl))
+            except Exception:
+                # Some indexes target tables created by SQL migrations (not ORM).
+                # In fresh/in-memory test DBs those tables may not exist yet.
+                pass
         conn.commit()
 
 

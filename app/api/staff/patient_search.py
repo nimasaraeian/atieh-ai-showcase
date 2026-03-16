@@ -5,12 +5,17 @@ Uses existing token-based search, never exposes financial data.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 
 from app.api.patient_search import search_patients as _search_patients_impl
 from app.security.roles import serialize_staff_patient
+from app.security.rbac import require_roles
 
-router = APIRouter(prefix="/api/staff", tags=["Staff"])
+router = APIRouter(
+    prefix="/api/staff",
+    tags=["Staff"],
+    dependencies=[Depends(require_roles("receptionist", "clinic_manager"))],
+)
 
 
 @router.get("/patients/search")

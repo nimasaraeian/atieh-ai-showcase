@@ -12,10 +12,15 @@ import traceback
 
 from database import get_db
 from app.importers.history_importer import import_history_excel
+from app.security.rbac import require_roles
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/import", tags=["import"])
+router = APIRouter(
+    prefix="/api/import",
+    tags=["import"],
+    dependencies=[Depends(require_roles("operator", "clinic_manager"))],
+)
 
 
 class ImportFileRequest(BaseModel):

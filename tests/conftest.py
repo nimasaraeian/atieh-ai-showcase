@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 # Set test environment variables BEFORE importing app
 os.environ['CRM_MODE'] = 'mock'
 os.environ['ENGINE_VERSION'] = 'v1'  # Use v1 for stable tests
+os.environ['ATIEH_AUTH_SECRET'] = 'TEST_SECRET_DO_NOT_USE_IN_PROD'
 
 # Import after setting env vars
 from main import app

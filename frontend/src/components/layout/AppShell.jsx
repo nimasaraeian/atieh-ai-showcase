@@ -12,14 +12,12 @@ const ROUTE_KEYS = {
 function parseUser() {
   try {
     const raw = localStorage.getItem('atieh_user')
+    const token = localStorage.getItem('atieh_token')
+    if (!token) {
+      return null
+    }
     if (!raw) {
-      return {
-        id: null,
-        username: 'user',
-        full_name: 'User',
-        role: 'receptionist',
-        active: false,
-      }
+      return null
     }
     const data = JSON.parse(raw)
     return {
@@ -30,13 +28,7 @@ function parseUser() {
       active: data.active ?? true,
     }
   } catch {
-    return {
-      id: null,
-      username: 'user',
-      full_name: 'User',
-      role: 'receptionist',
-      active: false,
-    }
+    return null
   }
 }
 
@@ -45,6 +37,8 @@ export function AppShell() {
   const { pathname: path } = useLocation()
   const { t } = useTranslation()
   const { titleKey, subtitleKey } = ROUTE_KEYS[path] ?? { titleKey: 'app.title', subtitleKey: '' }
+
+  if (!user) return <Outlet />
 
   return (
     <div className="flex h-screen bg-slate-950">

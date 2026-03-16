@@ -9,7 +9,13 @@ import pandas as pd
 from app.engine.scoring import calculate_financial_score
 from app.utils.insurance_normalize import normalize_insurance_for_lookup
 
-DB = Path(r".\atieh_clinic.db")
+import os
+
+# Global, legacy-only default (kept for backward compatibility where DB is used
+# directly from this module). New code should go via _resolve_slots_db /
+# _resolve_financial_db which honour environment overrides and test DB.
+_db_path = os.getenv("ATIEH_DB_PATH", "atieh_clinic_recovery81_test.db")
+DB = Path(_db_path)
 
 # CASH always has highest priority (payment_priority = 100 → financial_score = 1.0)
 CASH_LABELS = {"cash", "نقد", "نقدی", "nakid", "cash"}
@@ -344,22 +350,62 @@ except ImportError:
     get_patient_priority_profile = None
 
 
+def _resolve_base_db() -> _Path:
+    """
+    Single source of truth for the main SQLite DB used by the scheduling
+    recommender.
+
+    Resolution order:
+      1) ATIEH_DB_PATH environment variable (highest priority)
+      2) atieh_clinic_recovery81_test.db (validated/test DB)
+      3) atieh_clinic_working.db
+      4) atieh_clinic.db (legacy fallback)
+    """
+    env_path = os.getenv("ATIEH_DB_PATH")
+    if env_path:
+        p = _Path(env_path)
+        if p.exists():
+            return p
+    for name in (
+        "atieh_clinic_recovery81_test.db",
+        "atieh_clinic_working.db",
+        "atieh_clinic.db",
+    ):
+        p = _Path(name)
+        if p.exists():
+            return p
+    # Final fallback (may not exist, but keeps a deterministic path)
+    return _Path("atieh_clinic_recovery81_test.db")
+
+
 def _resolve_slots_db() -> _Path:
-    p = _Path(r".\atieh_clinic.db")
-    return p
+    # Slots live in the same DB as validation/test unless explicitly overridden.
+    return _resolve_base_db()
+
 
 def _resolve_financial_db() -> _Path:
-    for p in (_Path(r".\atieh_clinic_working.db"), _Path(r".\atieh_clinic.db")):
+    """
+    Financial truth source resolution.
+
+    Uses FINANCIAL_DB_PATH when set, otherwise follows the same order as
+    _resolve_base_db so that financial views like patient_value_score_v2_final
+    are read from the same file as validation/analysis.
+    """
+    env_path = os.getenv("FINANCIAL_DB_PATH")
+    if env_path:
+        p = _Path(env_path)
         if p.exists():
             return p
-    return _Path(r".\atieh_clinic_working.db")
+    return _resolve_base_db()
+
+
 import sqlite3 as _sqlite3
 
+
 def _resolve_recommend_db() -> _Path:
-    for p in (_Path(r".\atieh_clinic_working.db"), _Path(r".\atieh_clinic.db")):
-        if p.exists():
-            return p
-    return _Path(r".\atieh_clinic.db")
+    # Kept for compatibility where an explicit "recommend DB" is needed – now
+    # just an alias of the slots DB resolution.
+    return _resolve_base_db()
 
 def _clamp01(x):
     try:
@@ -456,6 +502,20 @@ def _window_preference_score(days_ahead: int, patient_ctx: dict) -> float:
     return 0.15
 
 def _load_patient_context(record_no: str) -> dict:
+    """
+    Load patient-level financial + scheduling context for a given record_no.
+
+    Financial truth source precedence:
+      1) patient_value_score_v2_final (final, aggregated financial layer; patient_id-level)
+      2) financial_identity_profile (legacy view – record_no-level fallback only)
+
+    Scheduling / follow-up truth source:
+      - v_financial_followup_queue_contactable
+      - v_financial_scheduling_queue_top300
+
+    All numeric scores are normalised to 0–1 in this context; the underlying
+    tables/views may store them as 0–100 or raw amounts.
+    """
     ctx = {
         "record_no_used": record_no,
         "financial_tier": None,
@@ -477,76 +537,157 @@ def _load_patient_context(record_no: str) -> dict:
     if not rn:
         return ctx
 
-    slots_db = _resolve_slots_db()
-    if not slots_db.exists():
+    fin_db = _resolve_financial_db()
+    if not fin_db.exists():
         return ctx
 
-    conn = _sqlite3.connect(str(slots_db))
+    conn = _sqlite3.connect(str(fin_db))
     conn.row_factory = _sqlite3.Row
     cur = conn.cursor()
 
     try:
+        # 1) Final financial layer (patient_id-level):
+        #    - patient_value_score_v2_final does NOT have record_no
+        #    - resolve patient_id from record_no using master_patient_profile_v2
+        patient_id = None
         try:
-            row = cur.execute(
+            pid_row = cur.execute(
+                """
+                SELECT patient_id
+                FROM master_patient_profile_v2
+                WHERE CAST(crm_patient_code AS TEXT) = CAST(? AS TEXT)
+                LIMIT 1
+                """,
+                (rn,),
+            ).fetchone()
+            # Fallback: some schemas may store record_no separately
+            if not pid_row:
+                try:
+                    pid_row = cur.execute(
+                        """
+                        SELECT patient_id
+                        FROM master_patient_profile_v2
+                        WHERE CAST(record_no AS TEXT) = CAST(? AS TEXT)
+                        LIMIT 1
+                        """,
+                        (rn,),
+                    ).fetchone()
+                except _sqlite3.OperationalError:
+                    pid_row = None
+            if pid_row and pid_row[0] is not None:
+                try:
+                    patient_id = int(pid_row[0])
+                except Exception:
+                    patient_id = None
+        except _sqlite3.OperationalError:
+            patient_id = None
+
+        fin_row = None
+        if patient_id is not None:
+            try:
+                fin_row = cur.execute(
+                    """
+                    SELECT
+                        patient_id,
+                        patient_value_score,
+                        financial_tier,
+                        lifetime_net_received_toman,
+                        last_jalali_year
+                    FROM patient_value_score_v2_final
+                    WHERE patient_id = ?
+                    LIMIT 1
+                    """,
+                    (patient_id,),
+                ).fetchone()
+            except _sqlite3.OperationalError:
+                fin_row = None
+
+        if fin_row:
+            d = dict(fin_row)
+            ctx["financial_tier"] = d.get("financial_tier")
+            ctx["financial_value_score"] = d.get("patient_value_score")
+            # Stored as lifetime_net_received_toman in v2_final
+            ctx["lifetime_net_received"] = d.get("lifetime_net_received_toman")
+            # last_payment_date_raw is not in v2_final; keep null unless we can
+            # safely populate from legacy identity view below.
+            ctx["last_payment_date_raw"] = None
+
+        # 2) Fallback (legacy record_no-level) for missing fields only
+        #    - do NOT override v2_final tier/value when present
+        try:
+            legacy = cur.execute(
                 """
                 SELECT
-                    record_no,
                     financial_tier,
                     financial_value_score,
                     lifetime_net_received,
                     last_payment_date_raw
                 FROM financial_identity_profile
-                WHERE record_no = ?
+                WHERE CAST(record_no AS TEXT) = ?
                 LIMIT 1
                 """,
                 (rn,),
             ).fetchone()
-            if row:
-                d = dict(row)
-                ctx["financial_tier"] = d.get("financial_tier")
-                ctx["financial_value_score"] = d.get("financial_value_score")
-                ctx["lifetime_net_received"] = d.get("lifetime_net_received")
-                ctx["last_payment_date_raw"] = d.get("last_payment_date_raw")
         except _sqlite3.OperationalError:
-            pass
+            legacy = None
 
+        if legacy:
+            ld = dict(legacy)
+            if ctx["financial_tier"] is None:
+                ctx["financial_tier"] = ld.get("financial_tier")
+            if ctx["financial_value_score"] is None:
+                ctx["financial_value_score"] = ld.get("financial_value_score")
+            if ctx["lifetime_net_received"] is None:
+                ctx["lifetime_net_received"] = ld.get("lifetime_net_received")
+            # Only fill last_payment_date_raw from legacy if we don't have it.
+            if ctx["last_payment_date_raw"] is None:
+                ctx["last_payment_date_raw"] = ld.get("last_payment_date_raw")
+
+        # Follow-up queue membership
         try:
-            row = cur.execute(
+            f_row = cur.execute(
                 """
                 SELECT action_type
                 FROM v_financial_followup_queue_contactable
-                WHERE record_no = ?
+                WHERE CAST(record_no AS TEXT) = ?
                 LIMIT 1
                 """,
                 (rn,),
             ).fetchone()
-            if row:
+            if f_row:
                 ctx["in_followup_queue"] = True
         except _sqlite3.OperationalError:
             pass
 
+        # Scheduling queue (TOP300) membership
         try:
-            row = cur.execute(
+            s_row = cur.execute(
                 """
                 SELECT scheduling_band, scheduling_priority_score
                 FROM v_financial_scheduling_queue_top300
-                WHERE record_no = ?
+                WHERE CAST(record_no AS TEXT) = ?
                 LIMIT 1
                 """,
                 (rn,),
             ).fetchone()
-            if row:
+            if s_row:
                 ctx["in_scheduling_top300"] = True
-                ctx["scheduling_band"] = row[0]
-                ctx["scheduling_priority_score"] = row[1]
+                ctx["scheduling_band"] = s_row[0]
+                ctx["scheduling_priority_score"] = s_row[1]
         except _sqlite3.OperationalError:
             pass
 
     finally:
         conn.close()
 
-    ctx["patient_value_score"] = _coerce_score01(ctx["financial_value_score"], default=0.0)
-    ctx["patient_priority_score"] = _coerce_score01(ctx["scheduling_priority_score"], default=0.0)
+    ctx["patient_value_score"] = _coerce_score01(
+        ctx["financial_value_score"],
+        default=0.0,
+    )
+    ctx["patient_priority_score"] = _coerce_score01(
+        ctx["scheduling_priority_score"],
+        default=0.0,
+    )
     ctx["followup_boost"] = 0.08 if ctx["in_followup_queue"] else 0.0
     ctx["top300_boost"] = 0.12 if ctx["in_scheduling_top300"] else 0.0
     ctx["tier_boost"] = _tier_boost(ctx["financial_tier"])
@@ -940,9 +1081,10 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
             slot_date = slot_date.strftime("%Y-%m-%d")
         weekday_en = FA_WEEKDAY_TO_EN.get(weekday_fa) if weekday_fa else None
 
-        # When no doctor filter: do not suggest a doctor (clinic-level slot)
-        rec_doctor_id = row["doctor_id"] if doctor_id is not None else None
-        rec_doctor_name = row["doctor_name"] if doctor_id is not None else None
+        # Always carry doctor metadata from the underlying slot when available.
+        # preferred_doctor_filter flag is exposed separately in the response.
+        rec_doctor_id = row["doctor_id"]
+        rec_doctor_name = row["doctor_name"]
         rec = {
             "slot_id": row["slot_id"],
             "doctor_id": rec_doctor_id,
@@ -1006,7 +1148,13 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
             "top300_boost": round(patient_ctx["top300_boost"], 3),
             "tier_boost": round(patient_ctx["tier_boost"], 3),
         },
-        "score_formula": "0.45*time + 0.15*insurance + 0.20*patient_priority + 0.10*patient_value + followup_boost + top300_boost + tier_boost",
+        # Keep this string in sync with the actual final_score computation above.
+        "score_formula": (
+            "0.30*time_score + 0.15*insurance_score + 0.15*patient_priority_score + "
+            "0.10*patient_value_score + 0.20*window_preference_score + "
+            "0.05*I(in_followup_queue) + 0.03*I(in_scheduling_top300) + "
+            "tier_weight(financial_tier)"
+        ),
         "recommendations": recommendations,
     }
     if priority_profile:
@@ -1023,6 +1171,10 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
 # =========================
 
 def _load_patient_context(record_no: str) -> dict:
+    # NOTE: This override remains for historical reasons (the file evolved with
+    # multiple hotfix layers). It must stay consistent with the primary
+    # implementation above.
+
     ctx = {
         "record_no_used": record_no,
         "financial_tier": None,
@@ -1053,12 +1205,72 @@ def _load_patient_context(record_no: str) -> dict:
     cur = conn.cursor()
 
     try:
-        row = None
+        # Resolve patient_id from record_no via master_patient_profile_v2
+        patient_id = None
         try:
-            row = cur.execute(
+            pid_row = cur.execute(
+                """
+                SELECT patient_id
+                FROM master_patient_profile_v2
+                WHERE CAST(crm_patient_code AS TEXT) = CAST(? AS TEXT)
+                LIMIT 1
+                """,
+                (rn,),
+            ).fetchone()
+            if not pid_row:
+                try:
+                    pid_row = cur.execute(
+                        """
+                        SELECT patient_id
+                        FROM master_patient_profile_v2
+                        WHERE CAST(record_no AS TEXT) = CAST(? AS TEXT)
+                        LIMIT 1
+                        """,
+                        (rn,),
+                    ).fetchone()
+                except _sqlite3.OperationalError:
+                    pid_row = None
+            if pid_row and pid_row[0] is not None:
+                try:
+                    patient_id = int(pid_row[0])
+                except Exception:
+                    patient_id = None
+        except _sqlite3.OperationalError:
+            patient_id = None
+
+        # Load final financial row by patient_id
+        fin_row = None
+        if patient_id is not None:
+            try:
+                fin_row = cur.execute(
+                    """
+                    SELECT
+                        patient_id,
+                        patient_value_score,
+                        financial_tier,
+                        lifetime_net_received_toman,
+                        last_jalali_year
+                    FROM patient_value_score_v2_final
+                    WHERE patient_id = ?
+                    LIMIT 1
+                    """,
+                    (patient_id,),
+                ).fetchone()
+            except _sqlite3.OperationalError:
+                fin_row = None
+
+        if fin_row:
+            d = dict(fin_row)
+            ctx["financial_tier"] = d.get("financial_tier")
+            ctx["financial_value_score"] = d.get("patient_value_score")
+            ctx["lifetime_net_received"] = d.get("lifetime_net_received_toman")
+            ctx["last_payment_date_raw"] = None
+
+        # Fallback for missing fields (legacy record_no-level)
+        try:
+            legacy = cur.execute(
                 """
                 SELECT
-                    record_no,
                     financial_tier,
                     financial_value_score,
                     lifetime_net_received,
@@ -1070,15 +1282,20 @@ def _load_patient_context(record_no: str) -> dict:
                 (rn,),
             ).fetchone()
         except _sqlite3.OperationalError:
-            row = None
+            legacy = None
 
-        if row:
-            d = dict(row)
-            ctx["financial_tier"] = d.get("financial_tier")
-            ctx["financial_value_score"] = d.get("financial_value_score")
-            ctx["lifetime_net_received"] = d.get("lifetime_net_received")
-            ctx["last_payment_date_raw"] = d.get("last_payment_date_raw")
+        if legacy:
+            ld = dict(legacy)
+            if ctx["financial_tier"] is None:
+                ctx["financial_tier"] = ld.get("financial_tier")
+            if ctx["financial_value_score"] is None:
+                ctx["financial_value_score"] = ld.get("financial_value_score")
+            if ctx["lifetime_net_received"] is None:
+                ctx["lifetime_net_received"] = ld.get("lifetime_net_received")
+            if ctx["last_payment_date_raw"] is None:
+                ctx["last_payment_date_raw"] = ld.get("last_payment_date_raw")
 
+        # Follow-up queue membership
         try:
             f_row = cur.execute(
                 """
@@ -1094,6 +1311,7 @@ def _load_patient_context(record_no: str) -> dict:
         except _sqlite3.OperationalError:
             pass
 
+        # Scheduling queue (TOP300) membership
         try:
             s_row = cur.execute(
                 """

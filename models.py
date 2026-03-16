@@ -166,6 +166,21 @@ class TreatmentType(enum.Enum):
     TREATMENT_20 = "treatment_20"
 
 
+class UserRole(enum.Enum):
+    OWNER = "owner"
+    CLINIC_MANAGER = "clinic_manager"
+    OPERATOR = "operator"
+    RECEPTIONIST = "receptionist"
+
+
+class SafeUserRole(_SafeEnumType):
+    """String-backed, crash-safe column type for the UserRole enum."""
+    cache_ok = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(UserRole, *args, **kwargs)
+
+
 class Patient(Base):
     """مدل بیمار"""
     __tablename__ = 'patients'
@@ -254,4 +269,18 @@ class ClinicSchedule(Base):
     end_time = Column(String(10), nullable=False)  # "18:00"
     is_active = Column(Integer, default=1)  # 1=active, 0=inactive
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class User(Base):
+    """Application user for authentication & RBAC."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(64), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(120), nullable=True)
+    role = Column(SafeUserRole(), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

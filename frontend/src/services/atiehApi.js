@@ -1,5 +1,6 @@
 import insuranceCatalog from '../data/insuranceCatalog'
 export const API_BASE = import.meta.env.VITE_API_BASE || ''
+const TOKEN_KEY = 'atieh_token'
 
 function extractError(payload) {
   if (!payload) return 'Request failed'
@@ -52,10 +53,20 @@ async function request(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
   let res
+  let token = null
+  try {
+    token = localStorage.getItem(TOKEN_KEY)
+  } catch {
+    token = null
+  }
   try {
     res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
       ...options,
     })
   } catch (e) {
@@ -81,6 +92,9 @@ async function request(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
 
 export const atiehApi = {
   recommendSlot: (body) => request('/ai/engine/recommend-slot', { method: 'POST', body: JSON.stringify(body) }),
+
+  authLogin: (body) => request('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
+  authMe: () => request('/api/auth/me'),
 
   searchPatients: (q, limit = 50, offset = 0) =>
     request(`/api/staff/patients/search?q=${encodeURIComponent(q || '')}&limit=${limit}&offset=${offset}`, {}, PATIENT_SEARCH_TIMEOUT_MS),
@@ -159,11 +173,18 @@ export const atiehApi = {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     let res
+    let token = null
+    try {
+      token = localStorage.getItem(TOKEN_KEY)
+    } catch {
+      token = null
+    }
     try {
       res = await fetch(url, {
         method: 'POST',
         body: formData,
         signal: controller.signal,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       })
     } catch (e) {
       clearTimeout(timeoutId)

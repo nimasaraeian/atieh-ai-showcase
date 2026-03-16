@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""Security and role policy for Atieh AI."""
+"""Security package: auth, RBAC, password hashing, seed users."""

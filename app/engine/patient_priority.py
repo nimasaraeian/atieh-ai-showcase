@@ -127,21 +127,74 @@ def load_raw_profile(
     crm_patient_code: Optional[str] = None,
     patient_id: Optional[int] = None,
 ) -> Optional[dict[str, Any]]:
-    """Load one row from patient_priority_profile_v1. Returns None if view missing or no row."""
+    """
+    Load one row from patient_priority_profile_v1.
+
+    Notes on aggregation:
+      - The underlying view is record_no-level; a single patient_id can have
+        multiple record_no / crm_patient_code rows.
+      - When record_no or crm_patient_code is provided we respect that exact
+        row (1–1 mapping in the view).
+      - When only patient_id is provided we aggregate to patient level by
+        computing simple, stable aggregates across all rows for that patient.
+    """
     try:
         cur = conn.cursor()
-        if record_no and str(record_no).strip():
-            cur.execute(f"SELECT * FROM {VIEW_NAME} WHERE record_no = ? OR crm_patient_code = ? LIMIT 1", (str(record_no).strip(), str(record_no).strip()))
-        elif crm_patient_code and str(crm_patient_code).strip():
-            cur.execute(f"SELECT * FROM {VIEW_NAME} WHERE crm_patient_code = ? LIMIT 1", (str(crm_patient_code).strip(),))
-        elif patient_id is not None:
-            cur.execute(f"SELECT * FROM {VIEW_NAME} WHERE patient_id = ? LIMIT 1", (int(patient_id),))
-        else:
-            return None
-        row = cur.fetchone()
-        if not row:
-            return None
-        return dict(row)
+        rn = str(record_no).strip() if record_no is not None else ""
+        crm = str(crm_patient_code).strip() if crm_patient_code is not None else ""
+
+        # 1) Exact-record lookup – deterministic and non-aggregated
+        if rn:
+            cur.execute(
+                f"SELECT * FROM {VIEW_NAME} WHERE record_no = ? OR crm_patient_code = ? LIMIT 1",
+                (rn, rn),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(row)
+
+        if crm:
+            cur.execute(
+                f"SELECT * FROM {VIEW_NAME} WHERE crm_patient_code = ? LIMIT 1",
+                (crm,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(row)
+
+        # 2) Patient-level aggregation when only patient_id is known
+        if patient_id is not None:
+            pid = int(patient_id)
+            cur.execute(
+                f"""
+                SELECT
+                    patient_id,
+                    MIN(record_no) AS record_no,
+                    MIN(crm_patient_code) AS crm_patient_code,
+                    MAX(patient_name) AS patient_name,
+                    SUM(COALESCE(visit_count, 0)) AS visit_count,
+                    MIN(first_visit_year) AS first_visit_year,
+                    MAX(last_year) AS last_year,
+                    MAX(COALESCE(relationship_years, 0)) AS relationship_years,
+                    SUM(COALESCE(lifetime_net_received, 0)) AS lifetime_net_received,
+                    SUM(COALESCE(payment_count, 0)) AS payment_count,
+                    MAX(last_payment_date) AS last_payment_date,
+                    MAX(insurance_name) AS insurance_name
+                FROM {VIEW_NAME}
+                WHERE patient_id = ?
+                GROUP BY patient_id
+                LIMIT 1
+                """,
+                (pid,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(row)
+
+        return None
     except sqlite3.OperationalError as e:
         logger.warning("patient_priority_profile_v1 not available: %s", e)
         return None

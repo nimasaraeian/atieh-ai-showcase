@@ -3,15 +3,25 @@ import { useTranslation } from 'react-i18next'
 import { LayoutDashboard, UploadCloud, Users, BarChart3, LogOut } from 'lucide-react'
 import { cn } from '../../utils/cn'
 
-const nav = [
-  { to: '/receptionist', labelKey: 'app.receptionist', icon: Users },
-  { to: '/files', labelKey: 'app.files', icon: UploadCloud },
-  { to: '/manager', labelKey: 'app.manager', icon: BarChart3 },
-]
+function navForRole(role) {
+  const r = role || ''
+  if (r === 'owner' || r === 'clinic_manager') {
+    return [
+      { to: '/receptionist', labelKey: 'app.receptionist', icon: Users },
+      { to: '/files', labelKey: 'app.files', icon: UploadCloud },
+      { to: '/manager', labelKey: 'app.manager', icon: BarChart3 },
+    ]
+  }
+  if (r === 'operator') {
+    return [{ to: '/files', labelKey: 'app.files', icon: UploadCloud }]
+  }
+  return [{ to: '/receptionist', labelKey: 'app.receptionist', icon: Users }]
+}
 
 export function Sidebar({ user }) {
   const loc = useLocation()
   const { t } = useTranslation()
+  const nav = navForRole(user?.role)
 
   return (
     <aside className="flex w-64 flex-col border-e border-slate-800 bg-slate-900/50">
@@ -52,6 +62,14 @@ export function Sidebar({ user }) {
         </div>
         <Link
           to="/login"
+          onClick={() => {
+            try {
+              localStorage.removeItem('atieh_user')
+              localStorage.removeItem('atieh_token')
+            } catch {
+              // ignore
+            }
+          }}
           className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-400 transition-colors hover:bg-slate-800/80 hover:text-red-400"
         >
           <LogOut className="h-4.5 w-4.5" />

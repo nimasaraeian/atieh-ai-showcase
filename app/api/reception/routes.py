@@ -6,7 +6,9 @@ Reception API routes – patient search and profile by V2 identity layer.
   GET /api/reception/patient/{patient_id}
   GET /api/reception/crm-code/{crm_code}
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+
+from app.security.rbac import require_roles
 
 from app.api.reception.service import (
     search_reception_patient,
@@ -14,7 +16,11 @@ from app.api.reception.service import (
     get_reception_patient_by_crm_code,
 )
 
-router = APIRouter(prefix="/api/reception", tags=["Reception"])
+router = APIRouter(
+    prefix="/api/reception",
+    tags=["Reception"],
+    dependencies=[Depends(require_roles("receptionist", "clinic_manager"))],
+)
 
 
 @router.get("/search-patient")

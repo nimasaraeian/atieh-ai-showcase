@@ -28,6 +28,14 @@ Premium, production-style clinic operations UI for Atieh AI dental software.
 
 In development, requests to `/api`, `/ai`, `/patients`, `/financial`, `/appointments` are proxied to the backend at `http://127.0.0.1:8000`. Start the FastAPI backend before using the frontend.
 
+## Production / Vercel
+
+This frontend supports a configurable backend base URL via Vite env:
+
+- `VITE_API_BASE`: backend origin, e.g. `https://your-railway-app.up.railway.app`
+
+If `VITE_API_BASE` is empty, the frontend will call relative paths (useful only when the backend serves the frontend under the same origin).
+
 ## Build
 
 ```bash
