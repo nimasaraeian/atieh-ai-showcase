@@ -327,8 +327,8 @@ def calculate_time_score(
 
         # Compress into [0.6, 1.0] so that time preference is softer.
         # Example: earliest=1.0, mid-shift≈0.8, latest≈0.6.
-        base = 0.6
-        amplitude = 0.4
+        base = 0.65
+        amplitude = 0.25
         return base + amplitude * raw
     except Exception:
         return 0.7

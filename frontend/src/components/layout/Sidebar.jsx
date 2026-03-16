@@ -1,11 +1,11 @@
 import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { LayoutDashboard, Stethoscope, Users, BarChart3, LogOut } from 'lucide-react'
+import { LayoutDashboard, UploadCloud, Users, BarChart3, LogOut } from 'lucide-react'
 import { cn } from '../../utils/cn'
 
 const nav = [
   { to: '/receptionist', labelKey: 'app.receptionist', icon: Users },
-  { to: '/doctor', labelKey: 'app.doctor', icon: Stethoscope },
+  { to: '/files', labelKey: 'app.files', icon: UploadCloud },
   { to: '/manager', labelKey: 'app.manager', icon: BarChart3 },
 ]
 
@@ -43,7 +43,12 @@ export function Sidebar({ user }) {
       </nav>
       <div className="border-t border-slate-800 p-3">
         <div className="rounded-lg px-3 py-2 text-xs text-slate-500">
-          {user?.name ?? 'User'} · {user?.role ?? 'Role'}
+          {(user?.full_name || user?.username || 'User')}
+          {user?.role && (
+            <span className="ms-1 text-[10px] text-slate-600">
+              · {user.role}
+            </span>
+          )}
         </div>
         <Link
           to="/login"

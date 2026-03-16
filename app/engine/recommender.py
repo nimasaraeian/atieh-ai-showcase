@@ -16,6 +16,265 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _extract_patient_priority_context(request_params: dict) -> tuple[str, float]:
+    """
+    Try to infer patient tier / priority from request params.
+    Falls back safely to medium if missing.
+    """
+    tier = str(request_params.get("patient_tier") or request_params.get("priority_band") or "").strip().upper()
+    score = _safe_float(request_params.get("patient_priority_score", request_params.get("priority_score", 50.0)), 50.0)
+
+    # Map score -> fallback tier if textual tier is missing
+    if not tier:
+        if score >= 85:
+            tier = "P1"
+        elif score >= 75:
+            tier = "P2"
+        elif score >= 65:
+            tier = "P3"
+        elif score >= 55:
+            tier = "P4"
+        elif score >= 40:
+            tier = "P5"
+        elif score >= 25:
+            tier = "P6"
+        else:
+            tier = "P7"
+
+    return tier, score
+
+
+def _get_preferred_day_window(tier: str) -> tuple[int, int, int, int]:
+    """
+    Returns:
+      allowed_start, allowed_end, preferred_start, preferred_end
+
+    Business intent:
+      - high priority => earlier preferred window
+      - medium/normal => mid-window preferred
+      - low => later preferred
+    """
+    t = (tier or "").upper()
+
+    mapping = {
+        "P1": (0, 3, 0, 1),
+        "P2": (0, 5, 1, 3),
+        "P3": (0, 7, 2, 5),
+        "P4": (0, 10, 3, 7),
+        "P5": (0, 14, 4, 10),
+        "P6": (0, 21, 7, 14),
+        "P7": (3, 30, 10, 21),
+    }
+    return mapping.get(t, (0, 14, 4, 10))
+
+
+def _apply_date_window_scoring(scored_slots: list, request_params: dict) -> list:
+    """
+    Hotfix layer:
+      Add a tier-aware date/window correction AFTER base scoring but BEFORE sorting.
+
+    Assumptions:
+      - slot may contain a real date-like field (slot_date / date / appointment_date)
+      - if not available, no date adjustment is applied
+    """
+    from datetime import datetime, timezone
+
+    tier, priority_score = _extract_patient_priority_context(request_params)
+    allowed_start, allowed_end, pref_start, pref_end = _get_preferred_day_window(tier)
+
+    def _parse_slot_date(slot_dict):
+        candidates = [
+            slot_dict.get("slot_date"),
+            slot_dict.get("date"),
+            slot_dict.get("appointment_date"),
+            slot_dict.get("appointment_datetime"),
+            slot_dict.get("start_datetime"),
+        ]
+        for c in candidates:
+            if not c:
+                continue
+            try:
+                s = str(c).strip()
+                if "T" in s or " " in s:
+                    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.date()
+                return datetime.fromisoformat(s).date()
+            except Exception:
+                continue
+        return None
+
+    today = datetime.now(timezone.utc).date()
+
+    for scored in scored_slots:
+        slot = scored.get("slot", {}) or {}
+        slot_date = _parse_slot_date(slot)
+        if not slot_date:
+            # no real date info -> leave score as-is
+            comps = scored.setdefault("components", {})
+            comps["window_fit"] = 0.0
+            comps["same_day_penalty"] = 0.0
+            comps["window_total"] = scored.get("total_score", 0.0)
+            continue
+
+        days_from_now = (slot_date - today).days
+
+        # hard exclusion outside allowed window
+        if days_from_now < allowed_start or days_from_now > allowed_end:
+            scored["total_score"] = max(0.0, float(scored.get("total_score", 0.0)) - 0.30)
+            penalty = -0.30
+            fit_bonus = 0.0
+        else:
+            # preferred-window bonus
+            if pref_start <= days_from_now <= pref_end:
+                fit_bonus = 0.10
+            elif days_from_now < pref_start:
+                # too early for medium/lower tiers
+                if tier in {"P5", "P6", "P7"}:
+                    fit_bonus = -0.10
+                elif tier == "P4":
+                    fit_bonus = -0.05
+                else:
+                    fit_bonus = 0.02
+            else:
+                # later than preferred but still allowed
+                fit_bonus = 0.02
+
+            penalty = 0.0
+
+            # explicit same-day guard for medium/lower tiers
+            if days_from_now == 0 and tier in {"P5", "P6", "P7"}:
+                penalty -= 0.12
+            elif days_from_now <= 1 and tier in {"P6", "P7"}:
+                penalty -= 0.08
+
+            scored["total_score"] = max(0.0, min(1.0, float(scored.get("total_score", 0.0)) + fit_bonus + penalty))
+
+        slot["days_from_now"] = days_from_now
+        slot["allowed_window_start"] = allowed_start
+        slot["allowed_window_end"] = allowed_end
+        slot["preferred_window_start"] = pref_start
+        slot["preferred_window_end"] = pref_end
+
+        comps = scored.setdefault("components", {})
+        comps["window_fit"] = fit_bonus
+        comps["same_day_penalty"] = penalty
+        comps["window_total"] = scored.get("total_score", 0.0)
+        scored["slot"] = slot
+
+    return scored_slots
+
+
+
+
+
+def _attach_slot_dates_from_weekday(scored_slots: list) -> list:
+    """
+    Hotfix:
+    If slot_date is missing, derive a real near-future date from slot['weekday'].
+    We map Persian weekday -> next calendar occurrence from today.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    fa_to_py_weekday = {
+        "دوشنبه": 0,
+        "سه‌شنبه": 1,
+        "سه شنبه": 1,
+        "چهارشنبه": 2,
+        "پنجشنبه": 3,
+        "پنج شنبه": 3,
+        "جمعه": 4,
+        "شنبه": 5,
+        "یکشنبه": 6,
+        "یک شنبه": 6,
+    }
+
+    today = datetime.now(timezone.utc).date()
+    today_py = today.weekday()  # Monday=0 ... Sunday=6
+
+    for scored in scored_slots:
+        slot = scored.get("slot", {}) or {}
+        if slot.get("slot_date"):
+            continue
+
+        weekday_fa = str(slot.get("weekday") or "").strip()
+        if not weekday_fa:
+            continue
+
+        target_py = fa_to_py_weekday.get(weekday_fa)
+        if target_py is None:
+            continue
+
+        delta = (target_py - today_py) % 7
+        slot_date = today + timedelta(days=delta)
+        slot["slot_date"] = slot_date.isoformat()
+        scored["slot"] = slot
+
+    return scored_slots
+
+def _diversify_scored_slots_by_weekday(sorted_scored_slots: list, top_n: int) -> list:
+    """
+    Enforce weekday diversity after scoring+sorting (descending).
+
+    Rules:
+    1) First pass: pick best scoring slot for each unique weekday.
+    2) Second pass: if still < top_n, allow additional slots from any weekday by score order.
+
+    Notes:
+    - Keeps relative score order within each pass.
+    - Safe for missing weekday values: those items are treated as non-diversifiable and will
+      be picked in the second pass by score order.
+    """
+    if not sorted_scored_slots or top_n <= 0:
+        return []
+
+    selected = []
+    selected_ids = set()
+    used_weekdays = set()
+
+    def _key(item: dict) -> tuple:
+        slot = (item or {}).get("slot", {}) or {}
+        return (
+            str(slot.get("weekday") or "").strip(),
+            str(slot.get("shift_code") or "").strip(),
+            str(slot.get("start_time") or "").strip(),
+            str(slot.get("end_time") or "").strip(),
+        )
+
+    # First pass: unique weekdays
+    for item in sorted_scored_slots:
+        slot = (item or {}).get("slot", {}) or {}
+        wd = str(slot.get("weekday") or "").strip()
+        k = _key(item)
+        if k in selected_ids:
+            continue
+        if wd and wd not in used_weekdays:
+            selected.append(item)
+            selected_ids.add(k)
+            used_weekdays.add(wd)
+            if len(selected) >= top_n:
+                return selected[:top_n]
+
+    # Second pass: fill remaining by score order
+    for item in sorted_scored_slots:
+        k = _key(item)
+        if k in selected_ids:
+            continue
+        selected.append(item)
+        selected_ids.add(k)
+        if len(selected) >= top_n:
+            break
+
+    return selected[:top_n]
+
 def _build_reason_strings_fa(scored: dict) -> List[str]:
     """Build Persian explanation strings for a scored slot."""
     reasons = []
@@ -32,6 +291,26 @@ def _build_reason_strings_fa(scored: dict) -> List[str]:
     boost = scored.get("preferred_doctor_boost", 0.0)
     if boost and boost > 0:
         reasons.append(f"بوست پزشک مورد نظر: +{boost:.2f}")
+
+    comps = scored.get("components", {}) or {}
+    wf = comps.get("window_fit")
+    if wf is not None:
+        try:
+            if float(wf) > 0.05:
+                reasons.append("تناسب زمانی با بازه پیشنهادی: بالا")
+            elif float(wf) < -0.05:
+                reasons.append("زمان این نوبت برای این سطح بیمار خیلی زود است")
+        except Exception:
+            pass
+
+    sdp = comps.get("same_day_penalty")
+    if sdp is not None:
+        try:
+            if float(sdp) < -0.01:
+                reasons.append("نوبت همان‌روزی برای این بیمار در اولویت بالا نیست")
+        except Exception:
+            pass
+
     return reasons
 
 
@@ -231,8 +510,17 @@ def _recommend_slots_v1(
         else:
             logger.info(f"✅ Applied preferred doctor boost to {boost_count}/{len(scored_slots)} slots")
     
+    # Attach real near-future dates from weekday if missing
+    scored_slots = _attach_slot_dates_from_weekday(scored_slots)
+
+    # Apply date-aware hotfix scoring before final sort
+    scored_slots = _apply_date_window_scoring(scored_slots, request_params)
+
     # Sort by total score (descending)
     scored_slots.sort(key=lambda x: x['total_score'], reverse=True)
+
+    # Weekday diversity filter (prevents collapsing on one weekday like Friday 09:00)
+    scored_slots = _diversify_scored_slots_by_weekday(scored_slots, top_n=top_n)
     
     # Snapshot 2: SCORED_SLOTS after sorting
     if scored_slots:
@@ -393,6 +681,7 @@ def _recommend_slots_v1(
     # Fix A: Fallback when recommendations empty but we have candidate slots
     if not recommendations and scored_slots:
         from app.engine.doctor_matcher import match_doctor
+        # scored_slots is already weekday-diversified; keep the same behavior in fallback
         fallback_slots = scored_slots[:top_n]
         for scored in fallback_slots:
             slot = scored['slot']

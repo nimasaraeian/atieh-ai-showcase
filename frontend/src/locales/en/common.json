@@ -214,6 +214,15 @@
     "reviewBadge": "Needs review",
     "noReviewNeeded": "OK",
     "statusProfileIncomplete": "Profile incomplete",
+    "status": {
+      "ok": "OK",
+      "initial": "Initial profile",
+      "incomplete": "Profile incomplete",
+      "multi_identity": "Multi-identity record",
+      "needs_history": "History needs completion",
+      "needs_insurance": "Insurance needs completion",
+      "temporary": "Temporary status"
+    },
     "suggestedTime": "Suggested time",
     "showing": "shown",
     "loadMore": "Load more",

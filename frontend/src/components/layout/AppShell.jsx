@@ -5,16 +5,38 @@ import { Topbar } from './Topbar'
 
 const ROUTE_KEYS = {
   '/receptionist': { titleKey: 'app.receptionist', subtitleKey: 'app.subtitleReceptionist' },
-  '/doctor': { titleKey: 'app.doctor', subtitleKey: 'app.subtitleDoctor' },
+  '/files': { titleKey: 'app.files', subtitleKey: '' },
   '/manager': { titleKey: 'app.manager', subtitleKey: 'app.subtitleManager' },
 }
 
 function parseUser() {
   try {
     const raw = localStorage.getItem('atieh_user')
-    return raw ? JSON.parse(raw) : { name: 'User', role: 'Receptionist' }
+    if (!raw) {
+      return {
+        id: null,
+        username: 'user',
+        full_name: 'User',
+        role: 'receptionist',
+        active: false,
+      }
+    }
+    const data = JSON.parse(raw)
+    return {
+      id: data.id ?? null,
+      username: data.username ?? data.name ?? 'user',
+      full_name: data.full_name ?? data.name ?? data.username ?? 'User',
+      role: data.role ?? 'receptionist',
+      active: data.active ?? true,
+    }
   } catch {
-    return { name: 'User', role: 'Receptionist' }
+    return {
+      id: null,
+      username: 'user',
+      full_name: 'User',
+      role: 'receptionist',
+      active: false,
+    }
   }
 }
 

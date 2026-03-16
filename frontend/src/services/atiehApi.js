@@ -145,6 +145,45 @@ export const atiehApi = {
   getRevenueByDoctor: (limit = 15, filters = {}) => request(buildUrl(`/api/manager/revenue-by-doctor?limit=${limit}`, filters)),
   getDoctorWorkload: (limit = 15, filters = {}) => request(buildUrl(`/api/manager/doctor-workload?limit=${limit}`, filters)),
   getServiceNormalizationReport: (limit = 100) => request(`/api/manager/service-normalization-report?limit=${limit}`),
+
+  uploadImportFile: async ({ file, file_type, source_system, period, import_mode, notes }) => {
+    const url = `${API_BASE}/api/import/upload`
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('file_type', file_type)
+    if (source_system) formData.append('source_system', source_system)
+    if (period) formData.append('period', period)
+    if (import_mode) formData.append('import_mode', import_mode)
+    if (notes) formData.append('notes', notes)
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    let res
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      })
+    } catch (e) {
+      clearTimeout(timeoutId)
+      throw e
+    }
+    clearTimeout(timeoutId)
+    let payload = null
+    try {
+      const text = await res.text()
+      try {
+        payload = text ? JSON.parse(text) : null
+      } catch {
+        payload = text
+      }
+    } catch (e) {
+      throw new Error('Network error: ' + (e?.message || 'Failed to upload'))
+    }
+    if (!res.ok) throw new Error(extractError(payload) || `Upload failed: ${res.status}`)
+    return payload
+  },
 }
 
 function buildUrl(base, filters = {}) {

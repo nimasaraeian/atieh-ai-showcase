@@ -4,14 +4,19 @@ import { LayoutDashboard } from 'lucide-react'
 
 const ROLES = [
   { id: 'receptionist', label: 'Receptionist' },
-  { id: 'doctor', label: 'Doctor' },
   { id: 'manager', label: 'Manager' },
+  { id: 'operator', label: 'Technical Operator' },
 ]
 
-const ROLE_ROUTES = { receptionist: '/receptionist', doctor: '/doctor', manager: '/manager' }
+const ROLE_ROUTES = {
+  receptionist: '/receptionist',
+  manager: '/manager',
+  operator: '/files',
+}
 
 export function LoginPage() {
   const [username, setUsername] = useState('')
+  const [fullName, setFullName] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('receptionist')
   const [error, setError] = useState('')
@@ -20,11 +25,30 @@ export function LoginPage() {
   function handleSubmit(e) {
     e.preventDefault()
     setError('')
+
     if (!username.trim()) {
       setError('Please enter username')
       return
     }
-    const user = { name: username.trim(), role }
+
+    // Simple credential check for technical operator
+    if (role === 'operator') {
+      // Hard-coded demo credentials; can be wired to backend auth later
+      if (username.trim() !== 'operator' || password !== 'clinic123') {
+        setError('نام کاربری یا رمز عبور اپراتور نادرست است.')
+        return
+      }
+    }
+
+    const now = Date.now()
+    const user = {
+      id: now,
+      username: username.trim(),
+      full_name: (fullName || username).trim(),
+      role,
+      active: true,
+    }
+
     localStorage.setItem('atieh_user', JSON.stringify(user))
     navigate(ROLE_ROUTES[role] ?? '/receptionist')
   }
@@ -64,6 +88,16 @@ export function LoginPage() {
                   </button>
                 ))}
               </div>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-400">Full name</label>
+              <input
+                type="text"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
+                placeholder="Enter full name (e.g. Receptionist Ali)"
+              />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-slate-400">Username</label>

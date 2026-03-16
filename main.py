@@ -16,7 +16,7 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Any
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -917,6 +917,103 @@ async def api_root():
         "message": "خوش آمدید به سیستم نوبت دهی کلینیک دندانپزشکی آتیه",
         "version": "1.0.0",
         "docs": "/docs"
+    }
+
+
+def _ensure_dir(path: str) -> None:
+    import os
+    os.makedirs(path, exist_ok=True)
+
+
+@app.post("/api/import/upload")
+async def upload_import_file(
+    request: Request,
+    file: UploadFile = File(...),
+    file_type: str = Form(...),
+    source_system: str | None = Form(None),
+    period: str | None = Form(None),
+    import_mode: str = Form("append"),
+    notes: str | None = Form(None),
+):
+    """
+    Secure upload endpoint for CRM-exported files.
+
+    - Only operator/admin/manager role is allowed (technical access).
+    - Validates extension and file_type.
+    - Routes file into existing data/inputs/... folders without breaking current paths.
+    """
+    user = getattr(request, "user", None) or getattr(request.state, "user", None)
+    role = getattr(user, "role", None) if user else None
+    if role not in ("operator", "admin", "manager"):
+        raise HTTPException(status_code=403, detail="فقط اپراتور فنی مجاز به آپلود فایل است.")
+
+    import os
+    from pathlib import Path
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="نام فایل نامعتبر است.")
+
+    filename = str(file.filename)
+    lower = filename.lower()
+    if not (lower.endswith(".xlsx") or lower.endswith(".xls") or lower.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="فقط فایل‌های Excel یا CSV مجاز هستند.")
+
+    if file_type not in ("history", "payments", "reference"):
+        raise HTTPException(status_code=400, detail="نوع فایل نامعتبر است.")
+
+    base = Path("data")
+    # حفظ ساختار فعلی: فقط انتخاب زیرپوشه مقصد
+    if file_type == "history":
+        target_dir = base / "inputs" / "history"
+    elif file_type == "payments":
+        target_dir = base / "inputs" / "payments"
+    else:
+        target_dir = base / "inputs" / "reference"
+
+    staging_dir = base / "uploads_staging"
+    _ensure_dir(str(staging_dir))
+    _ensure_dir(str(target_dir))
+
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = f"{ts}__{Path(filename).name}"
+
+    # ذخیره در استیجینگ
+    staging_path = staging_dir / safe_name
+    content = await file.read()
+    try:
+        with staging_path.open("wb") as out:
+            out.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطا در ذخیره فایل موقت: {e}")
+
+    # انتقال/کپی به مسیر نهایی بدون تغییر ساختار موجود
+    final_path = target_dir / safe_name
+    try:
+        with final_path.open("wb") as out_final:
+            out_final.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطا در ذخیره فایل در مسیر نهایی: {e}")
+
+    logger.info(
+        "Import file uploaded: %s -> %s (type=%s, mode=%s, source=%s, period=%s, notes=%s, role=%s)",
+        staging_path,
+        final_path,
+        file_type,
+        import_mode,
+        source_system,
+        period,
+        (notes or "")[:256],
+        role,
+    )
+
+    return {
+        "ok": True,
+        "file_name": filename,
+        "stored_name": safe_name,
+        "file_type": file_type,
+        "target_path": str(final_path),
+        "import_mode": import_mode,
     }
 if __name__ == "__main__":
     import uvicorn

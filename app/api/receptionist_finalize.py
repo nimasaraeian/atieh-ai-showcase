@@ -37,12 +37,29 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
             service TEXT NOT NULL,
             date TEXT NOT NULL,
             time TEXT NOT NULL,
+            receptionist_user TEXT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             source TEXT NOT NULL DEFAULT 'AI',
             status TEXT NOT NULL DEFAULT 'confirmed'
         )
     """)
     conn.commit()
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """
+    Ensure optional columns exist (backward compatible upgrades).
+    Safe to run on every request.
+    """
+    try:
+        cur = conn.cursor()
+        cols = cur.execute("PRAGMA table_info(ai_finalized_bookings)").fetchall()
+        existing = {str(r[1]) for r in cols}  # (cid, name, type, notnull, dflt_value, pk)
+        if "receptionist_user" not in existing:
+            cur.execute("ALTER TABLE ai_finalized_bookings ADD COLUMN receptionist_user TEXT NULL")
+            conn.commit()
+    except sqlite3.OperationalError:
+        return
 
 
 class FinalizeBookingRequest(BaseModel):
@@ -52,6 +69,7 @@ class FinalizeBookingRequest(BaseModel):
     service: str
     date: str
     time: str
+    receptionist_user: Optional[str] = None
 
 
 @router.post("/finalize-booking")
@@ -67,6 +85,7 @@ def finalize_booking(payload: FinalizeBookingRequest = Body(...)):
     service = (payload.service or "").strip()
     date_val = (payload.date or "").strip()
     time_val = (payload.time or "").strip()
+    receptionist_user = (payload.receptionist_user or "").strip() or None
 
     if not record_no or not patient_name or not service or not date_val or not time_val:
         raise HTTPException(
@@ -82,19 +101,20 @@ def finalize_booking(payload: FinalizeBookingRequest = Body(...)):
     conn.row_factory = sqlite3.Row
     try:
         _ensure_table(conn)
+        _ensure_columns(conn)
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO ai_finalized_bookings
-                (record_no, patient_name, doctor_name, service, date, time, source, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'AI', 'confirmed')
+                (record_no, patient_name, doctor_name, service, date, time, receptionist_user, source, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'AI', 'confirmed')
             """,
-            (record_no, patient_name, doctor_name, service, date_val, time_val),
+            (record_no, patient_name, doctor_name, service, date_val, time_val, receptionist_user),
         )
         conn.commit()
         row_id = cur.lastrowid
         row = cur.execute(
-            "SELECT id, record_no, patient_name, doctor_name, service, date, time, created_at, source, status FROM ai_finalized_bookings WHERE id = ?",
+            "SELECT id, record_no, patient_name, doctor_name, service, date, time, receptionist_user, created_at, source, status FROM ai_finalized_bookings WHERE id = ?",
             (row_id,),
         ).fetchone()
         return dict(row)
@@ -116,11 +136,13 @@ def get_finalized_bookings(limit: int = 100):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        _ensure_table(conn)
+        _ensure_columns(conn)
         cur = conn.cursor()
         try:
             cur.execute(
                 """
-                SELECT id, record_no, patient_name, doctor_name, service, date, time, created_at, source, status
+                SELECT id, record_no, patient_name, doctor_name, service, date, time, receptionist_user, created_at, source, status
                 FROM ai_finalized_bookings
                 ORDER BY created_at DESC
                 LIMIT ?

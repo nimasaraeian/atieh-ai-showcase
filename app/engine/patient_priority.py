@@ -19,6 +19,7 @@ from typing import Any, Optional
 from app.engine.patient_priority_config import (
     WEIGHTS,
     get_scheduling_window_days,
+    get_scheduling_window_model,
     get_tier_for_score,
     get_tier_label,
 )
@@ -179,8 +180,10 @@ def compute_priority_profile(
     )
     patient_priority_score = round(_clamp100(total), 1)
     tier = get_tier_for_score(patient_priority_score)
-    min_days, max_days = get_scheduling_window_days(tier)
-    scheduling_window_days = max_days  # primary: max days ahead
+    model = get_scheduling_window_model(tier)
+    min_days, max_days = model["allowed"]
+    pref_min, pref_max = model["preferred"]
+    scheduling_window_days = max_days  # legacy field used in some UIs
     recommended_priority_band = tier
 
     explanation = {
@@ -193,6 +196,8 @@ def compute_priority_profile(
         "tier": tier,
         "scheduling_window_min_days": min_days,
         "scheduling_window_max_days": max_days,
+        "scheduling_preferred_min_days": pref_min,
+        "scheduling_preferred_max_days": pref_max,
     }
 
     return {
@@ -219,6 +224,8 @@ def compute_priority_profile(
         "scheduling_window_days": scheduling_window_days,
         "scheduling_window_min_days": min_days,
         "scheduling_window_max_days": max_days,
+        "scheduling_preferred_min_days": pref_min,
+        "scheduling_preferred_max_days": pref_max,
         "recommended_priority_band": recommended_priority_band,
         "explanation_json": json.dumps(explanation, ensure_ascii=False),
     }

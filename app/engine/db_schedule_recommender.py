@@ -2,7 +2,7 @@
 
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -54,9 +54,23 @@ FA_WEEKDAY_TO_EN = {
 }
 
 
+def _clinic_now() -> datetime:
+    """
+    Return current datetime in clinic local timezone (Asia/Tehran by default).
+    Falls back to naive local time if timezone data is not available.
+    """
+    try:
+        # Python 3.9+: use zoneinfo if available
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Tehran"))
+    except Exception:
+        # Fallback: use local time (assumed server already configured to clinic TZ)
+        return datetime.now()
+
+
 def _next_occurrence_date(weekday_py: int) -> str:
-    """Return YYYY-MM-DD for the next occurrence of the given weekday (0=Mon, 6=Sun)."""
-    today = datetime.now().date()
+    """Return YYYY-MM-DD for the next occurrence of the given weekday (0=Mon, 6=Sun) using clinic today."""
+    today = _clinic_now().date()
     today_weekday = today.weekday()
     days_ahead = (weekday_py - today_weekday + 7) % 7
     target = today + timedelta(days=days_ahead)
@@ -379,6 +393,68 @@ def _tier_boost(tier: str) -> float:
         return 0.02
     return 0.0
 
+
+def _window_preference_score(days_ahead: int, patient_ctx: dict) -> float:
+    """
+    Preferred-window score (0–1) based on the same preferred/allowed window model
+    exposed to the UI via patient_priority_profile.
+
+    - Inside preferred window => high score.
+    - Outside preferred but inside allowed => low score (unless preferred is empty/unavailable).
+    """
+    try:
+        d = int(days_ahead)
+    except Exception:
+        return 0.5
+
+    allowed_min = int(patient_ctx.get("scheduling_window_min_days", 0) or 0)
+    allowed_max = int(patient_ctx.get("scheduling_window_max_days", 21) or 21)
+    pref_min = patient_ctx.get("scheduling_preferred_min_days")
+    pref_max = patient_ctx.get("scheduling_preferred_max_days")
+
+    try:
+        pref_min = int(pref_min) if pref_min is not None else None
+        pref_max = int(pref_max) if pref_max is not None else None
+    except Exception:
+        pref_min, pref_max = None, None
+
+    # If preferred window is not available, fallback to a mild "earlier is slightly better".
+    if pref_min is None or pref_max is None or pref_max < pref_min:
+        if allowed_max <= allowed_min:
+            return 0.5
+        pos = (d - allowed_min) / float(max(1, allowed_max - allowed_min))
+        pos = max(0.0, min(1.0, pos))
+        return 0.6 - 0.2 * pos  # 0.6 early .. 0.4 late
+
+    # Clamp preferred inside allowed (safety)
+    pref_min = max(allowed_min, pref_min)
+    pref_max = min(allowed_max, pref_max)
+
+    tier = str(patient_ctx.get("patient_priority_tier") or "").upper()
+
+    # Dedicated behaviour for P5 (normal patients):
+    # - 0..4 days  : allowed but clearly penalized vs preferred
+    # - 5..12 days : highest scoring band
+    # - 13..14 days: acceptable but below preferred
+    if tier == "P5":
+        if pref_min <= d <= pref_max:
+            return 1.0
+        if d < pref_min:
+            # Near-term early slots: allowed but strongly down-ranked relative to preferred.
+            return 0.05
+        if d > pref_max and d <= allowed_max:
+            # Slightly beyond preferred but still in allowed window.
+            return 0.25
+        # Outside allowed window (should normally be filtered); keep very low.
+        return 0.0
+
+    # Default behaviour for other tiers:
+    if pref_min <= d <= pref_max:
+        # Inside preferred window: emphasize.
+        return 0.95
+    # Outside preferred but still allowed: strongly down-rank when preferred exists.
+    return 0.15
+
 def _load_patient_context(record_no: str) -> dict:
     ctx = {
         "record_no_used": record_no,
@@ -478,7 +554,195 @@ def _load_patient_context(record_no: str) -> dict:
     return ctx
 
 
-TOP_N_RECOMMENDATIONS = 3
+TOP_N_RECOMMENDATIONS = 5
+
+
+def _parse_ymd(date_str: str):
+    try:
+        s = str(date_str or "").strip()
+        if not s:
+            return None
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _generate_dates_for_weekday_within_window(
+    weekday_py: int,
+    min_days: int,
+    max_days: int,
+):
+    """
+    Generate all concrete calendar dates for a given Python weekday (0=Monday)
+    within [min_days, max_days] days ahead from clinic 'today'.
+    """
+    today = _clinic_now().date()
+    dates = []
+    if max_days < min_days:
+        return dates
+    for delta in range(int(min_days), int(max_days) + 1):
+        d = today + timedelta(days=delta)
+        if d.weekday() == int(weekday_py):
+            dates.append((d, delta))
+    return dates
+
+
+def _diversify_by_date(sorted_recs: list[dict], k: int = 5) -> list[dict]:
+    """
+    Enforce date-level diversity over already-sorted recommendations.
+
+    Strategy (two-pass, as requested):
+      1) Group candidates by concrete slot date (`rec['date']`).
+      2) PASS 1 (date diversity):
+         - Take the best slot (highest score) from each date group.
+         - Order those by score and keep up to k.
+      3) PASS 2 (fill remaining):
+         - If still need more, take the 2nd-best per date, then 3rd-best, etc.,
+           each wave ordered by score, until k is reached.
+
+    Notes:
+      - Does not fabricate dates; only re-orders/filters real candidates.
+      - If unique dates < k, some dates will contribute 2+ slots, but only
+        after every date has had a chance to appear.
+    """
+    if not sorted_recs or k <= 0:
+        return []
+
+    # Group by date key
+    buckets: dict[str, list[dict]] = {}
+    for rec in sorted_recs:
+        date_key = str(rec.get("date") or "")  # empty string for unknown
+        buckets.setdefault(date_key, []).append(rec)
+
+    # Ensure each bucket is sorted by score descending (in case caller didn't)
+    def _score(x: dict) -> float:
+        try:
+            return float(x.get("final_score", x.get("score", 0.0)) or 0.0)
+        except Exception:
+            return 0.0
+
+    for dk, items in buckets.items():
+        buckets[dk] = sorted(items, key=_score, reverse=True)
+
+    selected: list[dict] = []
+    used_ids: set[int] = set()
+
+    def _id_for(rec: dict) -> int:
+        return id(rec)
+
+    # Helper to add a wave of index-th items across all dates, ordered by score
+    def _add_wave(idx: int):
+        nonlocal selected
+        wave: list[dict] = []
+        for dk, items in buckets.items():
+            if idx < len(items):
+                cand = items[idx]
+                sid = _id_for(cand)
+                if sid not in used_ids:
+                    wave.append(cand)
+        # Order this wave by score
+        wave.sort(key=_score, reverse=True)
+        for cand in wave:
+            sid = _id_for(cand)
+            if sid in used_ids:
+                continue
+            selected.append(cand)
+            used_ids.add(sid)
+            if len(selected) >= k:
+                return True
+        return False
+
+    # PASS 1: best per date (index 0)
+    if _add_wave(0):
+        return selected[:k]
+
+    # PASS 2+: 2nd-best, 3rd-best, ... per date as needed
+    max_bucket_len = max(len(v) for v in buckets.values())
+    for idx in range(1, max_bucket_len):
+        if _add_wave(idx):
+            break
+
+    return selected[:k]
+
+def _group_recommendations_by_datetime(
+    sorted_recs: list[dict],
+    *,
+    key_fields: tuple[str, ...] = ("date", "time", "weekday_en"),
+) -> list[dict]:
+    """
+    Group repeated recommendations that are effectively the same visible time-slot.
+
+    This prevents showing clones like:
+      Friday 09:00 Unit 6
+      Friday 09:00 Unit 10
+      Friday 09:00 Unit 2
+
+    Instead we return ONE recommendation with:
+      - capacity_count: number of underlying units/slots
+      - slot_ids: list of slot_id candidates
+      - unit_options: list of {slot_id, unit, floor}
+
+    Important:
+    - No artificial diversity is created; we only *aggregate* real candidates.
+    - Representative score is max(final_score) among the grouped items.
+    """
+    if not sorted_recs:
+        return []
+
+    buckets: dict[tuple, list[dict]] = {}
+    for r in sorted_recs:
+        k = tuple((r.get(f) or "") for f in key_fields)
+        buckets.setdefault(k, []).append(r)
+
+    grouped: list[dict] = []
+    for k, items in buckets.items():
+        # pick best scoring representative
+        def _score(x: dict) -> float:
+            try:
+                return float(x.get("final_score", x.get("score", 0.0)) or 0.0)
+            except Exception:
+                return 0.0
+
+        items_sorted = sorted(items, key=_score, reverse=True)
+        rep = dict(items_sorted[0])  # shallow copy
+
+        slot_ids = []
+        unit_options = []
+        for it in items_sorted:
+            sid = it.get("slot_id")
+            if sid is not None:
+                slot_ids.append(sid)
+            unit_options.append(
+                {
+                    "slot_id": sid,
+                    "unit": it.get("unit"),
+                    "floor": it.get("floor"),
+                }
+            )
+
+        capacity_count = len(items_sorted)
+        rep["capacity_count"] = capacity_count
+        rep["slot_ids"] = slot_ids
+        rep["unit_options"] = unit_options
+
+        # Add a concise reason if capacity is aggregated
+        if capacity_count > 1:
+            reasons = rep.get("reasons")
+            if isinstance(reasons, list):
+                # keep it short; insert at front
+                if "MULTI_CAPACITY" not in reasons:
+                    rep["reasons"] = (["MULTI_CAPACITY"] + reasons)[:3]
+            else:
+                rep["reasons"] = ["MULTI_CAPACITY"]
+
+        grouped.append(rep)
+
+    # Preserve global ranking: sort groups by representative score
+    grouped.sort(
+        key=lambda x: float(x.get("final_score", x.get("score", 0.0)) or 0.0),
+        reverse=True,
+    )
+    return grouped
 
 
 def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
@@ -517,6 +781,8 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
                 patient_ctx["patient_priority_tier"] = priority_profile.get("patient_priority_tier")
                 patient_ctx["scheduling_window_min_days"] = priority_profile.get("scheduling_window_min_days", 0)
                 patient_ctx["scheduling_window_max_days"] = priority_profile.get("scheduling_window_max_days", 14)
+                patient_ctx["scheduling_preferred_min_days"] = priority_profile.get("scheduling_preferred_min_days")
+                patient_ctx["scheduling_preferred_max_days"] = priority_profile.get("scheduling_preferred_max_days")
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("Failed to load patient priority profile: %s", e)
@@ -558,27 +824,32 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
     """
     params.append(top_n)
 
-    rows = cur.execute(sql, params).fetchall()
+    base_rows = cur.execute(sql, params).fetchall()
     conn.close()
 
-    if priority_profile and rows:
-        min_days = patient_ctx.get("scheduling_window_min_days", 0)
-        max_days = patient_ctx.get("scheduling_window_max_days", 365)
-        today = datetime.now().date()
-        filtered = []
-        for row in rows:
+    # Expand weekday patterns into concrete dates across allowed scheduling window
+    rows = []
+    if priority_profile and base_rows:
+        min_days = int(patient_ctx.get("scheduling_window_min_days", 0) or 0)
+        max_days = int(patient_ctx.get("scheduling_window_max_days", 21) or 21)
+        for row in base_rows:
             weekday_fa = str(row["weekday_name"] or "").strip()
             weekday_py = FA_WEEKDAY_TO_PY.get(weekday_fa)
-            if weekday_py is not None:
-                slot_date_str = _next_occurrence_date(weekday_py)
-                slot_d = datetime.strptime(slot_date_str, "%Y-%m-%d").date()
-                days_ahead = (slot_d - today).days
-                if min_days <= days_ahead <= max_days:
-                    filtered.append(row)
-            else:
-                filtered.append(row)
-        if filtered:
-            rows = filtered
+            if weekday_py is None:
+                # If weekday cannot be mapped, keep row as-is without expansion
+                rows.append(row)
+                continue
+            for d, days_ahead in _generate_dates_for_weekday_within_window(
+                weekday_py,
+                min_days,
+                max_days,
+            ):
+                r = dict(row)
+                r["_slot_date"] = d.strftime("%Y-%m-%d")
+                r["_days_ahead"] = days_ahead
+                rows.append(r)
+    else:
+        rows = list(base_rows)
 
     insurance_priority_df = _load_insurance_priority_df()
 
@@ -608,40 +879,65 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         top300_boost = patient_ctx["top300_boost"]
         tier_boost = patient_ctx["tier_boost"]
 
+        # Days ahead for this specific slot using concrete date if available
+        slot_date = None
+        days_ahead = None
+        weekday_fa = str(row["weekday_name"] or "").strip()
+        slot_date_str = row.get("_slot_date")
+        if slot_date_str:
+            slot_date = datetime.strptime(slot_date_str, "%Y-%m-%d").date()
+            days_ahead = int(row.get("_days_ahead", (slot_date - _clinic_now().date()).days))
+        else:
+            weekday_py = FA_WEEKDAY_TO_PY.get(weekday_fa)
+            if weekday_py is not None:
+                slot_date_str = _next_occurrence_date(weekday_py)
+                slot_date = datetime.strptime(slot_date_str, "%Y-%m-%d").date()
+                days_ahead = (slot_date - _clinic_now().date()).days
+        window_pref_score = (
+            _window_preference_score(days_ahead, patient_ctx)
+            if days_ahead is not None
+            else 0.5
+        )
+        in_preferred = (window_pref_score >= 0.9)
+
+        # Updated scoring formula including stronger window preference
         final_score = (
-    0.55 * time_score +
-    0.15 * financial_score +
-    0.12 * patient_priority_score +
-    0.08 * patient_value_score +
-    0.04 * (1.0 if patient_ctx["in_followup_queue"] else 0.0) +
-    0.04 * (1.0 if patient_ctx["in_scheduling_top300"] else 0.0) +
-    0.02 * (1.0 if patient_ctx["financial_tier"] == "VIP" else 0.5 if patient_ctx["financial_tier"] == "HIGH" else 0.2 if patient_ctx["financial_tier"] == "MEDIUM" else 0.0)
-)
+            0.30 * time_score +
+            0.15 * financial_score +
+            0.15 * patient_priority_score +
+            0.10 * patient_value_score +
+            0.20 * window_pref_score +
+            0.05 * (1.0 if patient_ctx["in_followup_queue"] else 0.0) +
+            0.03 * (1.0 if patient_ctx["in_scheduling_top300"] else 0.0) +
+            0.02 * (1.0 if patient_ctx["financial_tier"] == "VIP"
+                    else 0.5 if patient_ctx["financial_tier"] == "HIGH"
+                    else 0.2 if patient_ctx["financial_tier"] == "MEDIUM"
+                    else 0.0)
+        )
         final_score = round(_clamp01(final_score), 3)
 
+        # Concise, non-repetitive reasons (max 3) for receptionist UX
         reasons = []
-        if patient_ctx.get("patient_priority_tier"):
-            reasons.append(f"PATIENT_TIER_{patient_ctx['patient_priority_tier']}")
-        if patient_ctx.get("scheduling_window_max_days") is not None:
-            reasons.append(f"SCHEDULING_WINDOW_DAYS_{patient_ctx.get('scheduling_window_max_days')}")
+        if in_preferred:
+            reasons.append("IN_PREFERRED_WINDOW")
+        else:
+            # Outside preferred but inside allowed (since hard filter is applied)
+            reasons.append("OUTSIDE_PREFERRED_BUT_ALLOWED")
+        if patient_ctx.get("in_followup_queue"):
+            reasons.append("FOLLOWUP_QUEUE")
+        elif patient_ctx.get("in_scheduling_top300"):
+            reasons.append("TOP_QUEUE")
         if doctor_id is not None:
-            reasons.append("PREFERRED_DOCTOR_FILTER")
-        if patient_ctx["financial_tier"]:
-            reasons.append(f"TIER_{patient_ctx['financial_tier']}")
-        if patient_ctx["in_followup_queue"]:
-            reasons.append("FOLLOWUP_BOOST")
-        if patient_ctx["in_scheduling_top300"]:
-            reasons.append("TOP300_BOOST")
-        if patient_ctx["scheduling_band"]:
-            reasons.append(f"BAND_{patient_ctx['scheduling_band']}")
-        if time_score >= 0.85:
-            reasons.append("EARLY_SLOT")
-        if financial_score >= 0.7:
-            reasons.append("INSURANCE_PRIORITY")
+            reasons.append("FILTERED_BY_DOCTOR")
+        elif financial_score >= 0.7:
+            reasons.append("INSURANCE_OK")
+        # Cap reasons to 3
+        reasons = reasons[:3]
 
         weekday_fa = str(row["weekday_name"] or "").strip()
         weekday_py = FA_WEEKDAY_TO_PY.get(weekday_fa)
-        slot_date = _next_occurrence_date(weekday_py) if weekday_py is not None else None
+        if isinstance(slot_date, (datetime, )):
+            slot_date = slot_date.strftime("%Y-%m-%d")
         weekday_en = FA_WEEKDAY_TO_EN.get(weekday_fa) if weekday_fa else None
 
         # When no doctor filter: do not suggest a doctor (clinic-level slot)
@@ -660,6 +956,8 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
             "unit": row["unit_label"],
             "score": final_score,
             "final_score": final_score,
+            "days_ahead": days_ahead,
+            "in_preferred_window": in_preferred,
             "time_score": round(time_score, 3),
             "financial_score": round(financial_score, 3),
             "patient_priority_score": round(patient_priority_score, 3),
@@ -680,7 +978,9 @@ def recommend_slots_from_db(payload: dict, top_n: int = 50) -> dict:
         key=lambda x: x.get("final_score", x.get("score", 0)),
         reverse=True,
     )
-    recommendations = recommendations[:TOP_N_RECOMMENDATIONS]
+    # Collapse repeated same-date+time slots (multi-unit capacity) into one card.
+    recommendations = _group_recommendations_by_datetime(recommendations)
+    recommendations = _diversify_by_date(recommendations, k=TOP_N_RECOMMENDATIONS)
     count = len(recommendations)
 
     out = {

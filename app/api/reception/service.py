@@ -108,6 +108,7 @@ def _row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         },
         "review_warning": _needs_review(d.get("review_flag"), d.get("review_reason")),
         "review_reason": d.get("review_reason"),
+        "profile_status_code": _profile_status_code(d),
         "linked_crm_codes": [d.get("crm_patient_code")] if d.get("crm_patient_code") else [],
         "amounts_unit": "IRR",
         "display_total_net_received_irr": _format_rial(d.get("total_net_received")),
@@ -136,6 +137,38 @@ def _needs_review(review_flag: Any, review_reason: Any) -> bool:
     if review_reason is None:
         return False
     return bool(str(review_reason).strip())
+
+
+def _profile_status_code(d: dict[str, Any]) -> str:
+    """
+    Compute a structured profile status code for UI. Replaces vague "review needed" with
+    meaningful operational states. Returns one of:
+    ok, initial, incomplete, multi_identity, needs_history, needs_insurance, temporary
+    """
+    review_flag = d.get("review_flag")
+    review_reason = (d.get("review_reason") or "").strip() if d.get("review_reason") is not None else ""
+    has_review = review_flag == 1 or bool(review_reason)
+
+    has_id = bool(
+        (d.get("crm_patient_code") or "").strip()
+        or (d.get("primary_phone") or "").strip()
+    )
+    payment_count = d.get("payment_rows_count")
+    total_net = d.get("total_net_received")
+    link_tier = d.get("link_tier")
+    has_value = (payment_count or 0) > 0 or total_net is not None or bool(link_tier)
+
+    if not has_id or not has_value:
+        return "incomplete"
+    if has_review:
+        if review_reason == "tier_d_review":
+            return "needs_history"
+        if review_reason == "multiple_candidates_same_tier":
+            return "multi_identity"
+        return "temporary"
+    if not link_tier and (payment_count or 0) == 0:
+        return "initial"
+    return "ok"
 
 
 def _normalize_insurer_display(raw: Optional[str]) -> Optional[str]:
@@ -305,6 +338,8 @@ def search_reception_patient(
         multi_crm_ids = _patient_ids_with_multiple_crm(conn, patient_ids)
         for r in data:
             r["multi_crm_for_same_patient_flag"] = r.get("patient_id") in multi_crm_ids
+            if r.get("multi_crm_for_same_patient_flag"):
+                r["profile_status_code"] = "multi_identity"
 
         total_pages = (total + actual_limit - 1) // actual_limit if actual_limit else 0
         return {
@@ -336,6 +371,8 @@ def get_reception_patient_by_id(patient_id: int) -> dict[str, Any]:
         multi_crm = len(data) > 1
         for r in data:
             r["multi_crm_for_same_patient_flag"] = multi_crm
+            if multi_crm:
+                r["profile_status_code"] = "multi_identity"
             r["linked_crm_codes"] = linked_crm_codes
         first_visit_date, last_payment_date = _get_visit_dates_from_payments(conn, linked_crm_codes)
         for r in data:
@@ -379,6 +416,7 @@ def get_reception_patient_by_id(patient_id: int) -> dict[str, Any]:
             "review_status": {
                 "review_warning": any(r.get("review_warning") for r in data),
                 "review_reason": primary.get("review_reason") if primary and multi_crm else (primary.get("review_reason") if primary else None),
+                "profile_status_code": primary.get("profile_status_code") if primary else "ok",
             },
             "years_covered": sorted(years) if years else [],
             "value_band": primary.get("link_tier") if primary else None,
