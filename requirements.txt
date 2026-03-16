@@ -12,3 +12,5 @@ Faker>=20.0.0
 jdatetime>=4.1.0
 passlib[bcrypt]>=1.7.4
 python-jose[cryptography]>=3.3.0
+
+python-dotenv
