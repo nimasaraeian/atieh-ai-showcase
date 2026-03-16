@@ -273,3 +273,4 @@ wrapt==2.0.1
 yarl==1.22.0
 youtube-search-python==1.6.6
 zipp==3.23.0
+python-dotenv==1.0.1
