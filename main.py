@@ -47,6 +47,8 @@ from app.api.manager_dashboard import router as manager_dashboard_router
 from app.api.insurance_priority import router as insurance_priority_router
 from app.api.receptionist_finalize import router as receptionist_finalize_router
 from app.api.reception import router as reception_router
+from app.api.auth import router as auth_router
+from app.api.admin_users import router as admin_users_router
 from app.routers import frontend_api
 
 # -----------------------------
@@ -83,6 +85,8 @@ app.include_router(manager_dashboard_router)
 app.include_router(insurance_priority_router)
 app.include_router(receptionist_finalize_router)
 app.include_router(reception_router)
+app.include_router(auth_router)
+app.include_router(admin_users_router)
 app.include_router(frontend_api.router)
 
 # Patient search must be registered before /patients/{patient_id} to match /patients/search
@@ -103,7 +107,7 @@ app.add_middleware(
 # -----------------------------
 # Lightweight SQLite helper (for simple read-only endpoints)
 # -----------------------------
-DB_PATH = "atieh_clinic.db"
+DB_PATH = os.getenv("ATIEH_DB_PATH", "atieh_clinic.db")
 
 
 def get_db_conn():
@@ -182,7 +186,15 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "Atieh AI"}
+    return {
+        "ok": True,
+        "status": "ok",
+        "service": "Atieh AI",
+        "version": "1.0.0",
+        "crm_mode": os.environ.get("CRM_MODE", "mock"),
+        "crm_healthy": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _clamp01(x: float) -> float:
@@ -196,58 +208,191 @@ def _patient_exists(db: Session, patient_id: int) -> Patient:
     return p
 
 
+def _load_sqlite_financial_by_patient(patient_id: int) -> tuple[Optional[float], Optional[str], Optional[float]]:
+    """
+    Load final financial signals for a SQLAlchemy patient_id from the SQLite
+    financial DB (patient_value_score_v2_final).
+
+    Returns (financial_value_score_0_100, financial_tier, lifetime_net_received)
+    or (None, None, None) if unavailable.
+    """
+    # Resolve DB similar to patient_priority / db_schedule_recommender.
+    cand_env = os.getenv("FINANCIAL_DB_PATH") or os.getenv("ATIEH_DB_PATH")
+    candidates = []
+    if cand_env:
+        candidates.append(cand_env)
+    candidates.extend(
+        [
+            "atieh_clinic_recovery81_test.db",
+            "atieh_clinic_working.db",
+            "atieh_clinic.db",
+        ]
+    )
+
+    db_path = None
+    for name in candidates:
+        p = os.path.abspath(name)
+        if os.path.exists(p):
+            db_path = p
+            break
+    if not db_path:
+        return None, None, None
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    try:
+        # Map SQLAlchemy patient.id -> record_no if a mapping table exists.
+        record_no = None
+        for table in ("patient_recordno_map", "record_no_patient_map"):
+            try:
+                row = cur.execute(
+                    f"SELECT record_no FROM {table} WHERE patient_id = ? AND record_no IS NOT NULL LIMIT 1",
+                    (patient_id,),
+                ).fetchone()
+                if row:
+                    record_no = str(row[0])
+                    break
+            except sqlite3.OperationalError:
+                continue
+
+        if record_no is None:
+            # Fall back to patient_id column if it exists in the final table.
+            key_field = "patient_id"
+            key_value = patient_id
+        else:
+            key_field = "record_no"
+            key_value = record_no
+
+        try:
+            row = cur.execute(
+                f"""
+                SELECT
+                    financial_value_score,
+                    financial_tier,
+                    lifetime_net_received
+                FROM patient_value_score_v2_final
+                WHERE CAST({key_field} AS TEXT) = CAST(? AS TEXT)
+                LIMIT 1
+                """,
+                (str(key_value),),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+
+        if not row:
+            return None, None, None
+
+        fvs = row[0]
+        tier = row[1]
+        lifetime = row[2]
+        try:
+            fvs_f = float(fvs) if fvs is not None else None
+        except (TypeError, ValueError):
+            fvs_f = None
+        try:
+            life_f = float(lifetime) if lifetime is not None else None
+        except (TypeError, ValueError):
+            life_f = None
+        return fvs_f, (tier or None), life_f
+    finally:
+        conn.close()
+
+
 @app.post("/ai/score-patient")
 def ai_score_patient(patient_id: int = Query(...), db: Session = Depends(get_db)):
     """
     Expected by tests:
     - POST /ai/score-patient?patient_id=1
     - returns { patient_id, explain:{priority_score,value_score}, insights }
+
+    Scoring sources:
+      - value_score: patient_value_score_v2_final.financial_value_score (0–100) when available
+      - priority_score: derived from pending appointment intensity + financial tier
+      - risk_no_show / risk_late_payment: derived from Appointment history flags
     """
     p = _patient_exists(db, patient_id)
 
     total_appts = db.query(func.count(Appointment.id)).filter(Appointment.patient_id == patient_id).scalar() or 0
-    completed_appts = db.query(func.count(Appointment.id)).filter(
-        Appointment.patient_id == patient_id,
-        Appointment.status == "completed"
-    ).scalar() or 0
-    pending_appts = db.query(func.count(Appointment.id)).filter(
-        Appointment.patient_id == patient_id,
-        Appointment.status.in_(["pending", "confirmed"])
-    ).scalar() or 0
+    completed_appts = (
+        db.query(func.count(Appointment.id))
+        .filter(
+            Appointment.patient_id == patient_id,
+            Appointment.status == "completed",
+        )
+        .scalar()
+        or 0
+    )
+    pending_appts = (
+        db.query(func.count(Appointment.id))
+        .filter(
+            Appointment.patient_id == patient_id,
+            Appointment.status.in_(["pending", "confirmed"]),
+        )
+        .scalar()
+        or 0
+    )
 
     # risk_no_show: DB-derived from did_patient_show_up; fallback to 0 if column missing
     no_show_count = 0
     try:
-        no_show_count = db.query(func.count(Appointment.id)).filter(
-            Appointment.patient_id == patient_id,
-            Appointment.did_patient_show_up == False,
-        ).scalar() or 0
+        no_show_count = (
+            db.query(func.count(Appointment.id))
+            .filter(
+                Appointment.patient_id == patient_id,
+                Appointment.did_patient_show_up == False,
+            )
+            .scalar()
+            or 0
+        )
     except Exception:
         pass
 
     # risk_late_payment: DB-derived from paid_on_time; fallback to 0 if column missing
     late_payment_count = 0
     try:
-        late_payment_count = db.query(func.count(Appointment.id)).filter(
-            Appointment.patient_id == patient_id,
-            Appointment.paid_on_time == False,
-        ).scalar() or 0
+        late_payment_count = (
+            db.query(func.count(Appointment.id))
+            .filter(
+                Appointment.patient_id == patient_id,
+                Appointment.paid_on_time == False,
+            )
+            .scalar()
+            or 0
+        )
     except Exception:
         pass
 
-    # value_score: nonzero + variance (0-1), tests expect int 0-100 (Fix E)
-    value_score_01 = _clamp01(0.15 + (min(total_appts, 10) / 20.0) + ((patient_id % 7) / 20.0))
-    value_score = int(round(value_score_01 * 100))
+    # --- Financial truth source: patient_value_score_v2_final ---
+    fvs_0_100, financial_tier, lifetime_net_received = _load_sqlite_financial_by_patient(patient_id)
 
-    # priority_score: reflect pending intensity (0-1), tests expect 0-100 (Fix E)
-    priority_score_01 = _clamp01(0.10 + (min(pending_appts, 5) / 6.0))
+    if fvs_0_100 is not None:
+        value_score = int(round(max(0.0, min(100.0, fvs_0_100))))
+    else:
+        # Fallback: keep a weak but non-zero heuristic when financial table is not present.
+        value_score_01 = _clamp01(0.10 + (min(total_appts, 10) / 25.0))
+        value_score = int(round(value_score_01 * 100))
+
+    # Priority score: primarily driven by current pending demand, with a modest
+    # adjustment from financial tier so VIPs are distinguishable.
+    base_priority_01 = _clamp01(pending_appts / 5.0)
+    tier_bonus = 0.0
+    ft = (financial_tier or "").upper() if financial_tier else ""
+    if ft == "VIP":
+        tier_bonus = 0.20
+    elif ft == "HIGH":
+        tier_bonus = 0.12
+    elif ft == "MEDIUM":
+        tier_bonus = 0.06
+    priority_score_01 = _clamp01(base_priority_01 + tier_bonus)
     priority_score = int(round(priority_score_01 * 100))
 
     # risk_no_show, risk_late_payment: 0.0-1.0
     risk_no_show = _clamp01(no_show_count / max(1, total_appts))
     risk_late_payment = _clamp01(late_payment_count / max(1, total_appts))
 
-    # reason_codes: list of strings
+    # reason_codes: list of strings (explain drivers of priority/value/risk)
     reason_codes = []
     if pending_appts > 0:
         reason_codes.append("has_pending")
@@ -255,6 +400,14 @@ def ai_score_patient(patient_id: int = Query(...), db: Session = Depends(get_db)
         reason_codes.append("no_show_history")
     if late_payment_count > 0:
         reason_codes.append("late_payment_history")
+    if financial_tier:
+        reason_codes.append(f"financial_tier_{financial_tier}")
+    if lifetime_net_received is not None:
+        try:
+            if float(lifetime_net_received) > 0:
+                reason_codes.append("has_lifetime_value")
+        except (TypeError, ValueError):
+            pass
 
     return {
         "patient_id": patient_id,
@@ -263,6 +416,8 @@ def ai_score_patient(patient_id: int = Query(...), db: Session = Depends(get_db)
             "value_score": value_score,
             "risk_no_show": float(risk_no_show),
             "risk_late_payment": float(risk_late_payment),
+            "financial_tier": financial_tier,
+            "lifetime_net_received": float(lifetime_net_received) if lifetime_net_received is not None else None,
             "reason_codes": reason_codes,
         },
         "insights": {
@@ -896,6 +1051,13 @@ async def startup_event():
     """ایجاد جداول دیتابیس در زمان راه‌اندازی"""
     init_db()
 
+    # Ensure upload folders exist (Railway/Vercel safe, no-op if already present)
+    try:
+        from app.utils.upload_config import ensure_upload_dirs
+        ensure_upload_dirs()
+    except Exception as e:
+        logger.warning("Upload dir init failed (non-fatal): %s", e)
+
     # Run import pipeline migrations
     try:
         from app.db.run_migrations import run_all_migrations, ensure_import_columns
@@ -905,6 +1067,18 @@ async def startup_event():
         logger.info("Import pipeline migrations completed")
     except Exception as e:
         logger.error(f"Migration error (non-fatal): {e}")
+
+    # Seed bootstrap auth users (idempotent)
+    try:
+        from database import SessionLocal
+        from app.security.seed import ensure_seed_users
+        db = SessionLocal()
+        try:
+            ensure_seed_users(db)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("Auth seed failed (non-fatal): %s", e)
 
 
 # -----------------------------
@@ -942,41 +1116,69 @@ async def upload_import_file(
     - Validates extension and file_type.
     - Routes file into existing data/inputs/... folders without breaking current paths.
     """
-    user = getattr(request, "user", None) or getattr(request.state, "user", None)
-    role = getattr(user, "role", None) if user else None
-    if role not in ("operator", "admin", "manager"):
-        raise HTTPException(status_code=403, detail="فقط اپراتور فنی مجاز به آپلود فایل است.")
+    # RBAC: require owner/clinic_manager/operator unless AUTH_DISABLED=1
+    auth_disabled = os.environ.get("AUTH_DISABLED", "").strip() == "1"
+    role = None
+    if not auth_disabled:
+        auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        else:
+            token = ""
 
-    import os
+        if not token:
+            raise HTTPException(status_code=401, detail="not authenticated")
+
+        try:
+            from app.security.jwt import decode_access_token
+            payload = decode_access_token(token)
+            uid = int(payload.get("uid"))
+        except Exception:
+            raise HTTPException(status_code=401, detail="invalid token")
+
+        # Load from DB to enforce is_active and canonical role.
+        from database import SessionLocal
+        from models import User
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.id == uid).first()
+            if not u or not u.is_active:
+                raise HTTPException(status_code=403, detail="user is inactive")
+            role = u.role.value if getattr(u, "role", None) is not None else str(u.role or "")
+        finally:
+            db.close()
+
+        if role not in ("owner", "clinic_manager", "operator"):
+            raise HTTPException(status_code=403, detail="فقط اپراتور فنی مجاز به آپلود فایل است.")
+    else:
+        role = "operator"
+
     from pathlib import Path
+    from uuid import uuid4
+    from app.utils.upload_config import ensure_upload_dirs, category_to_target_dir
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="نام فایل نامعتبر است.")
 
     filename = str(file.filename)
-    lower = filename.lower()
+    # Block path traversal and normalize name
+    orig_name = Path(filename).name
+    lower = orig_name.lower()
     if not (lower.endswith(".xlsx") or lower.endswith(".xls") or lower.endswith(".csv")):
         raise HTTPException(status_code=400, detail="فقط فایل‌های Excel یا CSV مجاز هستند.")
 
     if file_type not in ("history", "payments", "reference"):
         raise HTTPException(status_code=400, detail="نوع فایل نامعتبر است.")
 
-    base = Path("data")
-    # حفظ ساختار فعلی: فقط انتخاب زیرپوشه مقصد
-    if file_type == "history":
-        target_dir = base / "inputs" / "history"
-    elif file_type == "payments":
-        target_dir = base / "inputs" / "payments"
-    else:
-        target_dir = base / "inputs" / "reference"
-
-    staging_dir = base / "uploads_staging"
-    _ensure_dir(str(staging_dir))
-    _ensure_dir(str(target_dir))
+    # Ensure folder structure exists and preserve importer-compatible paths.
+    up = ensure_upload_dirs()
+    target_dir = category_to_target_dir(file_type)
+    staging_dir = up.staging_dir
 
     from datetime import datetime as _dt
     ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = f"{ts}__{Path(filename).name}"
+    # Collision-proof filename (timestamp + uuid + original filename)
+    safe_name = f"{ts}__{uuid4().hex}__{orig_name}"
 
     # ذخیره در استیجینگ
     staging_path = staging_dir / safe_name
@@ -1009,15 +1211,19 @@ async def upload_import_file(
 
     return {
         "ok": True,
-        "file_name": filename,
+        "file_name": orig_name,
         "stored_name": safe_name,
-        "file_type": file_type,
+        "detected_category": file_type,
+        "upload_base_dir": str(up.base_dir),
+        "staging_path": str(staging_path),
         "target_path": str(final_path),
         "import_mode": import_mode,
     }
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port, reload=False)
 
 
 # -----------------------------
