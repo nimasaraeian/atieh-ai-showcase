@@ -1,383 +1,617 @@
-# Dental clinic AI
+# iQlinic
 
-AI-powered clinic intelligence system
-for value-based patient prioritization
-and scheduling optimization
+# AI-Powered Clinical Operations, Scheduling Intelligence & Healthcare Interoperability Platform
 
-## AI-Powered Clinic Intelligence and Value-Based Scheduling System
+Production-ready healthcare operational intelligence platform designed for private clinics, outpatient centers, and multi-doctor healthcare environments.
 
-Atieh AI is a real-world decision intelligence prototype designed to demonstrate how operational clinic data can be transformed into actionable insights through AI-driven analysis.
-
-The system combines patient behavior signals, financial indicators, and operational context to generate intelligent scheduling priorities, support clinic decision-making, and improve overall operational visibility.
+iQlinic transforms fragmented clinic data into explainable operational intelligence using AI-powered scheduling, continuity-aware doctor recommendation, real-time operational balancing, and healthcare interoperability architecture.
 
 ---
 
-## Table of Contents
+# Executive Summary
 
-- [Overview](#overview)
-- [Problem Statement](#problem-statement)
-- [System Capabilities](#system-capabilities)
-- [System Architecture](#system-architecture)
-- [Patient Identity Resolution Engine](#patient-identity-resolution-engine)
-- [Example Workflow](#example-workflow)
-- [Technology Stack](#technology-stack)
-- [Repository Structure](#repository-structure)
-- [Key Features](#key-features)
-- [Example Outputs](#example-outputs)
-- [Privacy & Data Protection](#privacy--data-protection)
-- [Use Cases](#use-cases)
-- [Future Development](#future-development)
-- [Author](#author)
-- [License](#license)
+Modern clinics generate enormous volumes of operational healthcare data every day:
 
----
+- appointments
+- patient records
+- doctor schedules
+- operational queues
+- visit histories
+- payment behaviors
+- service usage patterns
+- continuity relationships
+- scheduling interactions
 
-## Example scenario
+However, in most real-world clinic environments, this data remains:
 
-Input:
-patient history + payments
+- fragmented
+- operationally disconnected
+- inconsistent across systems
+- difficult to interpret
+- underutilized for decision-making
 
-Output:
-priority score
-recommended scheduling action
----
+Traditional clinic software systems mainly function as passive record-management tools.
 
-## Overview
+They store data.
 
-Healthcare clinics generate large volumes of operational data, including appointments, payments, patient records, and recurring visit patterns. In many real-world clinic environments, this data remains fragmented, inconsistent, or underutilized.
+They rarely understand operations.
 
-**Atieh AI** is a prototype clinic decision-support system built to demonstrate how AI and data engineering can be used to transform raw operational data into structured, decision-ready intelligence.
+They rarely optimize workflows.
 
-The system is designed around four core information layers:
+They rarely provide intelligent operational reasoning.
 
-- patient visit history
-- financial transaction behavior
-- behavioral engagement patterns
-- scheduling and operational context
+iQlinic was designed to address this gap.
 
-By combining these layers, Atieh AI helps illustrate how clinic data can support smarter prioritization, more informed scheduling, and stronger operational insight generation.
+The platform introduces an AI-powered operational intelligence layer capable of understanding:
 
----
+- patient continuity
+- scheduling conditions
+- operational pressure
+- doctor load
+- behavioral engagement
+- queue dynamics
+- service compatibility
+- workflow constraints
 
-## Problem Statement
+in real time.
 
-Many clinics face recurring operational challenges such as:
-
-- inefficient appointment allocation
-- weak prioritization of valuable returning patients
-- underutilized doctor capacity
-- fragmented patient records across operational datasets
-- limited visibility into patient retention behavior
-- difficulty identifying high-value patient segments
-
-Traditional scheduling systems often treat all visits and all patients the same. As a result, important behavioral, financial, and operational signals are ignored, even though they could meaningfully improve clinic performance.
-
-Atieh AI introduces a **data-driven clinic intelligence layer** designed to support more intelligent scheduling, better prioritization, and stronger operational decision-making.
+Rather than replacing existing HIS or EHR systems, iQlinic connects to operational healthcare infrastructure and transforms raw operational records into explainable operational decision support.
 
 ---
 
-## System Capabilities
+# Vision
 
-### Patient Behavioral Analysis
+The long-term vision of iQlinic is to become an AI-native healthcare operational intelligence and interoperability platform capable of:
 
-Analyzes visit frequency, appointment history, and patient return patterns to identify behavioral engagement with the clinic over time.
+- understanding fragmented healthcare operational systems
+- reducing operational scheduling inefficiencies
+- improving continuity of care
+- assisting healthcare workflows in real time
+- enabling AI-assisted interoperability across heterogeneous healthcare environments
+- supporting scalable operational healthcare intelligence across GCC healthcare systems
 
-### Financial Intelligence Layer
-
-Processes payment records and transaction behavior to highlight patients who may represent stronger long-term financial value.
-
-### Value-Based Patient Prioritization
-
-Uses behavioral and financial signals together to support more informed prioritization and better allocation of scheduling capacity.
-
-### Appointment Optimization
-
-Supports improved scheduling decisions by identifying patients more likely to return, continue treatment, or require operational attention.
-
-### Operational Insight Generation
-
-Transforms raw clinic data into interpretable outputs that help decision-makers better understand patient flow, retention signals, and operational patterns.
+The platform is intentionally designed around interoperability-first principles and operational realism rather than isolated AI demonstrations.
 
 ---
 
-## System Architecture
+# Real-World Operational Problems
 
-The system transforms raw clinic records into decision-support outputs through a multi-layer clinic intelligence pipeline.
+Private clinics and outpatient healthcare centers face recurring operational inefficiencies that traditional software systems rarely solve effectively.
+
+---
+
+# 1. Wrong Doctor Assignment
+
+In many clinics, doctor assignment is still heavily manual.
+
+Receptionists often make scheduling decisions without visibility into:
+
+- patient-doctor continuity
+- historical treatment relationships
+- doctor workload
+- operational pressure
+- queue conditions
+- overload risk
+- service compatibility
+
+As a result:
+
+- continuity of care weakens
+- patient satisfaction decreases
+- operational imbalance grows
+- valuable patients may disengage
+
+---
+
+# 2. Overloaded Doctors & Idle Capacity
+
+Most clinics lack dynamic operational balancing systems.
+
+This creates environments where:
+
+- some doctors become critically overloaded
+- some schedules remain underutilized
+- queues become unstable
+- operational efficiency declines
+
+Traditional appointment systems generally do not include real-time operational load reasoning.
+
+---
+
+# 3. Fragmented Operational Visibility
+
+Clinic managers often lack operational visibility into:
+
+- doctor utilization
+- operational bottlenecks
+- scheduling pressure
+- queue conditions
+- continuity trends
+- operational efficiency
+- overload dynamics
+
+Operational decisions become reactive rather than intelligence-driven.
+
+---
+
+# 4. Fragmented Healthcare Data
+
+Healthcare operational systems frequently contain:
+
+- inconsistent schemas
+- duplicated patient records
+- fragmented operational identifiers
+- multilingual field variations
+- legacy database structures
+- disconnected operational datasets
+
+This creates major barriers for interoperability and operational intelligence.
+
+---
+
+# The iQlinic Approach
+
+iQlinic introduces a healthcare operational intelligence layer positioned directly inside the clinic workflow.
+
+The platform continuously analyzes operational conditions and generates explainable AI-driven recommendations in real time.
+
+The architecture combines:
+
+- operational AI
+- scheduling intelligence
+- continuity analysis
+- interoperability infrastructure
+- queue optimization
+- operational balancing
+- schema normalization
+- identity resolution
+- workflow-aware reasoning
+
+inside a unified operational healthcare platform.
+
+---
+
+# Core Platform Capabilities
+
+---
+
+# Intelligent Doctor Recommendation Engine
+
+The doctor recommendation engine dynamically scores and ranks scheduling options using multiple operational dimensions simultaneously.
+
+The system evaluates:
+
+- historical patient-doctor continuity
+- doctor affinity
+- operational workload
+- queue pressure
+- overload risk
+- service compatibility
+- operational scheduling conditions
+- fallback safety constraints
+
+Recommendations are explainable and operationally grounded.
+
+The system is designed to support real receptionist workflows rather than isolated AI demos.
+
+---
+
+# Real-Time Operational Load Intelligence
+
+iQlinic continuously monitors operational pressure across clinic environments.
+
+Operational analysis includes:
+
+- doctor occupancy
+- queue pressure
+- appointment congestion
+- overload conditions
+- operational traffic patterns
+- scheduling saturation
+- operational imbalance
+
+Doctor operational states are dynamically classified as:
+
+- healthy
+- busy
+- overloaded
+- critical
+
+This enables real-time operational balancing inside the receptionist workflow.
+
+---
+
+# Patient Continuity Intelligence
+
+Continuity of care is one of the platform's primary operational objectives.
+
+The continuity layer tracks:
+
+- preferred doctor relationships
+- historical scheduling patterns
+- recurring patient behavior
+- treatment continuity
+- operational engagement history
+- long-term relationship consistency
+
+The goal is to reduce unnecessary doctor switching and improve continuity-aware scheduling behavior.
+
+---
+
+# AI-Powered Scheduling Optimization
+
+The scheduling intelligence engine combines:
+
+- operational constraints
+- behavioral signals
+- continuity indicators
+- doctor load
+- queue conditions
+- service requirements
+- operational pressure
+- scheduling availability
+
+to generate operationally balanced recommendations.
+
+The platform focuses on operational realism rather than simplistic slot recommendation logic.
+
+---
+
+# Operational Decision Support
+
+iQlinic transforms fragmented clinic records into structured operational intelligence outputs including:
+
+- scheduling recommendations
+- patient operational prioritization
+- continuity indicators
+- operational load visibility
+- queue analysis
+- doctor utilization summaries
+- operational pressure alerts
+- workflow optimization insights
+
+---
+
+# Healthcare Interoperability Architecture
+
+iQlinic is designed around an interoperability-first operational architecture.
+
+The platform includes a FHIR-aligned operational data model intended to support:
+
+- HL7 FHIR R4 workflows
+- multi-clinic operational integration
+- future Ministry-level interoperability
+- schema normalization
+- connector-based healthcare ingestion
+- AI-assisted interoperability workflows
+
+The architecture is intentionally modular and extensible.
+
+---
+
+# AI-Assisted Schema Intelligence
+
+Real-world healthcare systems rarely share identical schemas.
+
+Different healthcare systems may use:
+
+- different SQL structures
+- inconsistent field naming
+- legacy operational databases
+- fragmented operational identifiers
+- multilingual schema conventions
+- customized healthcare workflows
+
+To reduce integration friction, iQlinic includes a schema intelligence layer capable of:
+
+- field normalization
+- operational mapping
+- semantic schema interpretation
+- configurable connector templates
+- AI-assisted schema matching
+- operational data standardization
+
+The platform is designed to progressively evolve toward semi-autonomous interoperability onboarding.
+
+---
+
+# Patient Identity Resolution Engine
+
+Healthcare operational environments frequently contain fragmented patient identities.
+
+The same patient may appear across operational systems using:
+
+- inconsistent names
+- duplicated records
+- fragmented operational identifiers
+- formatting differences
+- multilingual variations
+- disconnected visit histories
+
+iQlinic includes a multi-signal identity resolution engine designed to:
+
+- standardize operational fields
+- generate candidate identity matches
+- evaluate confidence levels
+- cluster related operational records
+- build cleaner operational identities
+- reduce fragmentation before AI processing
+
+The identity layer combines:
+
+- phone similarity
+- name similarity
+- contextual operational matching
+- visit proximity
+- doctor continuity
+- behavioral consistency
+- operational metadata analysis
+
+to improve operational integrity before scheduling intelligence is applied.
+
+---
+
+# System Architecture
 
 ```mermaid
 flowchart TB
 
-A[Raw Clinic Data<br/>Appointments • Payments • Patients] --> B[Data Ingestion Layer]
-B --> C[Cleaning and Normalization]
-C --> D[Patient Identity Resolution]
-D --> E[Feature Engineering]
+A[Clinic HIS / SQL / EHR Systems] --> B[Connector Layer]
 
-E --> F[Behavioral Signals]
-E --> G[Financial Signals]
-E --> H[Operational Signals]
+B --> C[Schema Normalization Engine]
 
-F --> I[AI Decision Layer]
-G --> I
-H --> I
+C --> D[Identity Resolution Layer]
 
-I --> J[Priority Scoring]
-J --> K[Scheduling Recommendation]
-K --> L[API and Decision Output]
+D --> E[FHIR-Aligned Clinical Data Model]
 
-style A fill:#1f2937,stroke:#94a3b8,color:#ffffff
-style B fill:#273449,stroke:#94a3b8,color:#ffffff
-style C fill:#273449,stroke:#94a3b8,color:#ffffff
-style D fill:#334155,stroke:#94a3b8,color:#ffffff
-style E fill:#273449,stroke:#94a3b8,color:#ffffff
-style F fill:#374151,stroke:#94a3b8,color:#ffffff
-style G fill:#374151,stroke:#94a3b8,color:#ffffff
-style H fill:#374151,stroke:#94a3b8,color:#ffffff
-style I fill:#1d4ed8,stroke:#93c5fd,color:#ffffff,stroke-width:2px
-style J fill:#334155,stroke:#94a3b8,color:#ffffff
-style K fill:#334155,stroke:#94a3b8,color:#ffffff
-style L fill:#1f2937,stroke:#94a3b8,color:#ffffff
-```
+E --> F[Operational Intelligence Engine]
 
-Each layer contributes to turning raw clinic records into actionable operational intelligence while keeping the overall system architecture modular and extensible.
+F --> G[Constraint-Aware Ranking]
+F --> H[Operational Resolver]
+F --> I[Queue Intelligence]
+F --> J[Continuity Intelligence]
+F --> K[Load Balancing]
+F --> L[Production Optimization]
 
----
-
-## Patient Identity Resolution Engine
-
-One of the most important technical challenges in clinic data systems is dealing with fragmented and inconsistent patient records. A single patient may appear across multiple files, transactions, or appointment records with slight differences in name formatting, phone structure, date representation, or contextual metadata.
-
-To address this, Atieh AI includes a **multi-signal patient identity resolution layer** that standardizes fields, generates candidate matches, evaluates confidence, and groups related records into a cleaner unified identity structure.
-
-```mermaid
-flowchart TB
-
-A[Raw Patient Records] --> B[Field Standardization]
-B --> C[Candidate Match Generation]
-
-C --> D[Phone Similarity]
-C --> E[Name Similarity]
-C --> F[Date Proximity]
-C --> G[Doctor and Visit Context]
-
-D --> H[Confidence Evaluation]
-E --> H
-F --> H
-G --> H
-
-H --> I{Match Confidence}
-
-I -->|High| J[Auto Merge to Patient Cluster]
-I -->|Medium| K[Manual Review Queue]
-I -->|Low| L[Keep as Separate Record]
-
-J --> M[Unified Patient Identity]
+G --> M[Receptionist Workflow]
+H --> M
+I --> M
+J --> M
 K --> M
-L --> N[Independent Record]
+L --> M
 
-M --> O[Feature Generation Ready]
-N --> O
+M --> N[Operational Decision Support]
 
-style A fill:#1f2937,stroke:#94a3b8,color:#ffffff
-style B fill:#273449,stroke:#94a3b8,color:#ffffff
-style C fill:#273449,stroke:#94a3b8,color:#ffffff
-style D fill:#334155,stroke:#94a3b8,color:#ffffff
-style E fill:#334155,stroke:#94a3b8,color:#ffffff
-style F fill:#334155,stroke:#94a3b8,color:#ffffff
-style G fill:#334155,stroke:#94a3b8,color:#ffffff
-style H fill:#1d4ed8,stroke:#93c5fd,color:#ffffff,stroke-width:2px
-style I fill:#475569,stroke:#94a3b8,color:#ffffff
-style J fill:#166534,stroke:#86efac,color:#ffffff
-style K fill:#92400e,stroke:#fcd34d,color:#ffffff
-style L fill:#7f1d1d,stroke:#fca5a5,color:#ffffff
-style M fill:#1f2937,stroke:#94a3b8,color:#ffffff
-style N fill:#1f2937,stroke:#94a3b8,color:#ffffff
-style O fill:#273449,stroke:#94a3b8,color:#ffffff
+N --> O[Clinic Management Visibility]
 ```
 
-This diagram presents a portfolio-safe abstraction of the identity resolution workflow. The production implementation may include additional internal heuristics, thresholds, and validation rules that are intentionally not exposed in this public repository.
+---
+
+# Operational AI Layers
+
+The platform currently includes multiple operational intelligence modules validated in real-world clinic environments.
 
 ---
 
-## Example Workflow
+## Constraint-Aware Ranker V3
 
-A typical system workflow looks like this:
+Scores doctors dynamically using:
 
-1. Import historical clinic data, including appointments, payments, and patient records.
-2. Clean and normalize patient-related fields.
-3. Resolve or reconcile fragmented patient identities across datasets.
-4. Generate behavioral, financial, and operational features.
-5. Calculate prioritization indicators and decision-support signals.
-6. Produce scheduling recommendations and operational insights.
-
-This workflow reflects how raw clinic data can be progressively transformed into higher-quality decision intelligence.
+- continuity
+- affinity
+- operational load
+- queue pressure
+- overload penalties
+- operational scheduling conditions
 
 ---
 
-## Technology Stack
+## Operational Resolver V4
 
-The system is implemented using a modern Python-based data engineering and API workflow.
+Balances operational conditions in real time while applying fallback-safe operational logic.
 
-| Component | Technology |
-|----------|------------|
-| Programming Language | Python |
-| API Framework | FastAPI |
-| Database | SQLite |
+---
+
+## Patient Continuity Engine V1
+
+Tracks:
+
+- preferred doctors
+- recurring scheduling behavior
+- operational continuity
+- long-term patient relationships
+
+---
+
+## Queue & Load Balancer V1
+
+Provides operational awareness for:
+
+- healthy
+- busy
+- overloaded
+- critical
+
+doctor states.
+
+---
+
+## Production Optimization Layer V1
+
+Produces final explainable operational recommendations including:
+
+- strong_recommend
+- continuity_preferred
+- operational_recommend
+- overload_avoidance
+- fallback_safe
+
+---
+
+# Production Validation Status
+
+The platform has undergone operational validation inside live clinic environments.
+
+Current validation status includes:
+
+- 1M+ real clinic visits analyzed
+- live HIS-connected operational environment
+- shadow-mode deployment validation
+- real receptionist workflow testing
+- operational stress testing
+- multilingual workflow validation
+- operational AI layer testing
+- production-safe deployment architecture
+
+---
+
+# Example Operational Workflow
+
+1. Connect clinic HIS or SQL infrastructure.
+2. Import operational healthcare records.
+3. Normalize fragmented operational data.
+4. Resolve patient operational identities.
+5. Generate behavioral and operational features.
+6. Evaluate scheduling conditions.
+7. Score operational recommendation scenarios.
+8. Generate explainable AI recommendations.
+9. Deliver operational visibility to receptionists and clinic managers.
+
+---
+
+# GCC Healthcare Strategy
+
+iQlinic is strategically designed for GCC healthcare environments.
+
+Current regional focus includes:
+
+- Oman pilot deployment strategy
+- UAE expansion readiness
+- Saudi enterprise scalability
+- Arabic-first operational workflows
+- RTL-ready operational interfaces
+- multilingual deployment support
+- interoperability-oriented healthcare infrastructure
+
+---
+
+# Why GCC
+
+The GCC healthcare ecosystem presents strong operational AI opportunities due to:
+
+- rapid healthcare digitization
+- fragmented operational workflows
+- increasing private clinic density
+- operational inefficiency
+- Ministry-level modernization initiatives
+- FHIR adoption momentum
+- growing interoperability requirements
+
+---
+
+# Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Backend API | FastAPI |
+| Operational AI | Python |
+| Frontend | React + Vite |
+| Database | SQLite / SQL Server |
 | Data Processing | Pandas |
-| Data Input | Excel / CSV |
-| Development Environment | Python 3.x |
+| Interoperability | FHIR-aligned architecture |
+| Deployment | Desktop + Web |
+| Infrastructure | Connector-based operational architecture |
 | Version Control | Git / GitHub |
 
-The architecture is intentionally lightweight, modular, and practical for prototype decision systems and operational clinic intelligence workflows.
-
 ---
 
-## Repository Structure
-
-The repository is organized to separate application logic, clinic data processing pipelines, and supporting utilities while keeping the architecture easy to understand for technical reviewers and potential employers.
+# Repository Structure
 
 ```text
-atieh-ai/
+iqlinic/
 │
-├─ README.md
-├─ LICENSE
-├─ requirements.txt
-├─ .env.example
-│
-├─ app/
-│  ├─ main.py
-│  ├─ api/
-│  ├─ services/
-│  └─ models/
-│
-├─ engine/
-│  ├─ scoring_public_stub.py
-│  ├─ prioritization_public_stub.py
-│  └─ engine_overview.md
-│
-├─ scripts/
-│  ├─ demo_import.py
-│  ├─ demo_seed.py
-│  └─ smoke_test.ps1
-│
-├─ docs/
-│  ├─ system_architecture.md
-│  ├─ workflow.md
-│  └─ screenshots/
-│
-├─ examples/
-│  ├─ example_input.xlsx
-│  ├─ example_output.json
-│  └─ example_report.md
-│
-└─ tests/
-   ├─ test_api.py
-   └─ test_pipeline.py
+├── app/
+├── engine/
+├── ai_layers/
+├── scheduling/
+├── interoperability/
+├── normalization/
+├── identity_resolution/
+├── connectors/
+├── frontend/
+├── deployment/
+├── docs/
+├── examples/
+├── tests/
+└── scripts/
 ```
 
 ---
 
-## Key Features
+# Privacy & Data Protection
 
-- AI-driven patient prioritization
-- cluster-based identity resolution for fragmented clinic records
-- behavioral and financial signal integration
-- intelligent scheduling recommendation support
-- data normalization pipeline for messy healthcare datasets
-- modular architecture for clinic intelligence workflows
+This public repository is a sanitized and portfolio-safe representation of the platform.
 
----
+To protect operational privacy and proprietary infrastructure:
 
-## Example Outputs
+- no real patient data is included
+- production operational heuristics are abstracted
+- sensitive deployment logic is excluded
+- proprietary optimization rules are not exposed
+- operational infrastructure details are intentionally limited
 
-Example system outputs may include:
+The repository is intended to demonstrate:
 
-- patient priority scores
-- behavioral visit indicators
-- financial tier categorization
-- scheduling recommendations
-- operational decision-support summaries
+- operational healthcare architecture
+- interoperability direction
+- AI system engineering
+- workflow intelligence design
+- healthcare operational reasoning
 
-Example output format:
-
-```json
-{
-  "patient_id": 23841,
-  "priority_score": 0.82,
-  "financial_segment": "HIGH",
-  "visit_frequency": "ACTIVE",
-  "recommended_action": "high_priority_scheduling"
-}
-```
-
-These outputs demonstrate how raw clinic data can be transformed into structured, interpretable decision-support signals.
+without exposing sensitive production infrastructure.
 
 ---
 
-## Privacy & Data Protection
+# Future Direction
 
-This repository is a **sanitized portfolio version** of the system.
+Planned platform evolution includes:
 
-To protect privacy and proprietary logic:
-
-- real patient data has been removed
-- proprietary scoring algorithms are replaced with public demonstration stubs
-- sensitive clinic operational data is excluded
-- private business logic is not included
-- production-specific heuristics are intentionally abstracted
-
-The purpose of this repository is to demonstrate **system architecture, clinic intelligence design, and engineering approach**, not to expose production algorithms or real patient data.
-
----
-
-## Use Cases
-
-Potential applications of this system include:
-
-- dental clinics
-- private healthcare centers
-- outpatient appointment management systems
-- patient retention analytics
-- operational healthcare intelligence platforms
-- value-based clinic scheduling support
-
-The overall architecture can also be adapted to broader healthcare operations optimization scenarios.
+- AI-assisted interoperability onboarding
+- semi-autonomous schema mapping
+- cross-clinic operational learning
+- predictive scheduling optimization
+- operational forecasting
+- enterprise healthcare interoperability
+- multi-clinic orchestration
+- operational intelligence networks
+- self-improving mapping infrastructure
+- healthcare workflow optimization at scale
 
 ---
 
-## Future Development
+# Author
 
-Potential future improvements include:
+## Nima Saraeian
 
-- machine learning models for patient behavior prediction
-- real-time clinic scheduling optimization
-- automated retention and churn detection
-- predictive treatment-cycle analysis
-- integration with clinic management platforms
-- expanded decision support for multi-doctor environments
+AI Systems Builder  
+Healthcare Operational Intelligence  
+Behavioral & Decision Systems
 
----
-
-## Author
-
-**Nima Saraeian**  
-AI System Builder | Behavioral Data Strategist
-
-Specializing in AI-driven decision systems that combine behavioral analytics, operational data, and intelligent automation.
-
-**GitHub**  
-`https://github.com/nimasaraeian`
-
-**LinkedIn**  
-Coming soon
+GitHub:
+https://github.com/nimasaraeian
 
 ---
 
-## License
+# License
 
-This repository is released for portfolio and demonstration purposes.
+This repository is provided for architecture review, portfolio demonstration, and operational healthcare AI presentation purposes only.
 
-Commercial use, redistribution, or replication of proprietary logic is not permitted without prior permission.
+Commercial redistribution, replication of proprietary operational logic, or unauthorized deployment is prohibited without explicit permission.
 
 ---
 
-This project demonstrates how real-world clinic data can be transformed into intelligent decision systems using modern AI and data engineering practices.
+# Final Note
+
+iQlinic demonstrates how fragmented healthcare operational data can be transformed into explainable, workflow-aware operational intelligence systems using modern AI, interoperability-driven architecture, and operational healthcare reasoning.
+
+The platform is intentionally designed around real-world clinic workflows, operational realism, and scalable interoperability principles rather than isolated AI demonstrations.
